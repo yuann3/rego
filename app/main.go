@@ -6,9 +6,6 @@ import (
 	"os"
 )
 
-var _ = net.Listen
-var _ = os.Exit
-
 func main() {
 
 	l, err := net.Listen("tcp", "0.0.0.0:6379")
@@ -16,6 +13,7 @@ func main() {
 		fmt.Println("Failed to bind to port 6379")
 		os.Exit(1)
 	}
+	defer l.Close()
 
 	conn, err := l.Accept()
 	if err != nil {
