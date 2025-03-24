@@ -17,14 +17,17 @@ func main() {
 
 	fmt.Println("Server Started")
 
-	// Accept a connection
-	conn, err := l.Accept()
-	if err != nil {
-		fmt.Println("Error accepting connection: ", err.Error())
-		os.Exit(1)
-	}
+	for {
+		// Accept a connection
+		conn, err := l.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection: ", err.Error())
+			continue
+		}
 
-	handleClient(conn)
+		// Handle each client in a separate goroutine
+		go handleClient(conn)
+	}
 }
 
 // Processing commands from single client connection
