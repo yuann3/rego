@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
-	"io"
 	"net"
 	"os"
+	"strings"
+
+	"github.com/codecrafters-io/redis-starter-go/app/command"
+	"github.com/codecrafters-io/redis-starter-go/app/resp"
 )
 
 func main() {
@@ -17,6 +21,8 @@ func main() {
 
 	fmt.Println("Server Started")
 
+	commandRegistry := command.NewRegistry()
+
 	for {
 		// Accept a connection
 		conn, err := l.Accept()
@@ -26,33 +32,56 @@ func main() {
 		}
 
 		// Handle each client in a separate goroutine
-		go handleClient(conn)
+		go handleClient(conn, commandRegistry)
 	}
 }
 
 // Processing commands from single client connection
-func handleClient(conn net.Conn) {
+func handleClient(conn net.Conn, registry *command.Registry) {
 	defer conn.Close()
+	reader := bufio.NewReader(conn)
 
 	for {
-		// Reading line from the connection
-		buf := make([]byte, 1024)
-		_, err := conn.Read(buf)
+		respObj, err := resp.Parse(reader)
 		if err != nil {
-			if err == io.EOF {
-				fmt.Println("Client disconnected")
-				break
-			}
-			fmt.Println("Error reading from connection:", err.Error())
+			fmt.Println("Error parsing command:", err.Error())
 			break
 		}
 
-		// Send PONG response regardless of input FOR NOW
-		// TODO: IN future, parse the command and respond accordingly
-		_, err = conn.Write([]byte("+PONG\r\n"))
+		response := processCommand(respObj, registry)
+
+		// Write the response
+		_, err = conn.Write([]byte(response.Marshal()))
 		if err != nil {
 			fmt.Println("Error writing to connection:", err.Error())
 			break
 		}
 	}
+}
+
+func processCommand(respObj resp.RESP, registry *command.Registry) resp.RESP {
+	if respObj.Type != resp.Array {
+		return resp.NewError("ERR invalid command format")
+	}
+
+	if len(respObj.Array) == 0 {
+		return resp.NewError("ERR empty command")
+	}
+
+	// The first element is the command name
+	cmdNameResp := respObj.Array[0]
+	if cmdNameResp.Type != resp.BulkString {
+		return resp.NewError("ERR command must be a bulk string")
+	}
+
+	// Get the command handler
+	cmdName := strings.ToUpper(cmdNameResp.String)
+	handler, exists := registry.Get(cmdName)
+	if !exists {
+		return resp.NewError(fmt.Sprintf("ERR unknown command '%s'", cmdName))
+	}
+
+	// Execute the command with arguments
+	args := respObj.Array[1:]
+	return handler(args)
 }
