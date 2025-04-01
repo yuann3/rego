@@ -24,14 +24,12 @@ func main() {
 	commandRegistry := command.NewRegistry()
 
 	for {
-		// Accept a connection
 		conn, err := l.Accept()
 		if err != nil {
 			fmt.Println("Error accepting connection: ", err.Error())
 			continue
 		}
 
-		// Handle each client in a separate goroutine
 		go handleClient(conn, commandRegistry)
 	}
 }

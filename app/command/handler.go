@@ -23,6 +23,8 @@ func NewRegistry() *Registry {
 func (r *Registry) registerCommands() {
 	r.Register("PING", pingCommand)
 	r.Register("ECHO", echoCommand)
+	r.Register("SET", setCommand)
+	r.Register("GET", getCommand)
 }
 
 // Adds a command handler to the registry
