@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -12,6 +13,13 @@ import (
 )
 
 func main() {
+
+	dirFlag := flag.String("dir", "", "Directory where RDB files are stored")
+	dbFilenameFlag := flag.String("dbfilename", "", "Name of the RDB file")
+	flag.Parse()
+
+	command.InitConfig(*dirFlag, *dbFilenameFlag)
+
 	l, err := net.Listen("tcp", "0.0.0.0:6379")
 	if err != nil {
 		fmt.Println("Failed to bind to port 6379")

@@ -19,20 +19,18 @@ func NewRegistry() *Registry {
 	return r
 }
 
-// Registers all supported Redis commands
 func (r *Registry) registerCommands() {
 	r.Register("PING", pingCommand)
 	r.Register("ECHO", echoCommand)
 	r.Register("SET", setCommand)
 	r.Register("GET", getCommand)
+	r.Register("CONFIG", configCommand)
 }
 
-// Adds a command handler to the registry
 func (r *Registry) Register(name string, handler Handler) {
 	r.commands[strings.ToUpper(name)] = handler
 }
 
-// Returns the handler for a command name
 func (r *Registry) Get(name string) (Handler, bool) {
 	handler, ok := r.commands[strings.ToUpper(name)]
 	return handler, ok
