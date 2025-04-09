@@ -13,12 +13,15 @@ import (
 )
 
 func main() {
-
 	dirFlag := flag.String("dir", "", "Directory where RDB files are stored")
 	dbFilenameFlag := flag.String("dbfilename", "", "Name of the RDB file")
 	flag.Parse()
 
 	command.InitConfig(*dirFlag, *dbFilenameFlag)
+
+	if err := command.LoadRDBFile(*dirFlag, *dbFilenameFlag); err != nil {
+		fmt.Printf("Error loading RDB file: %v\n", err)
+	}
 
 	l, err := net.Listen("tcp", "0.0.0.0:6379")
 	if err != nil {

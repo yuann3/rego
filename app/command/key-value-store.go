@@ -1,6 +1,7 @@
 package command
 
 import (
+	"github.com/codecrafters-io/redis-starter-go/rdb"
 	"sync"
 	"time"
 )
@@ -69,6 +70,50 @@ func (s *KeyValueStore) Exists(key string) bool {
 	}
 
 	return true
+}
+
+func (s *KeyValueStore) GetAllKeys() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	keys := make([]string, 0, len(s.data))
+	now := time.Now()
+
+	for key := range s.data {
+		// Skip keys that have expired
+		if expiry, hasExpiry := s.expiryMap[key]; hasExpiry && now.After(expiry) {
+			continue
+		}
+		keys = append(keys, key)
+	}
+
+	return keys
+}
+
+func (s *KeyValueStore) LoadFromRDB(dir, dbfilename string) error {
+	keyData, expiryData, err := rdb.LoadRDBFile(dir, dbfilename)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Clear existing data
+	s.data = make(map[string]string)
+	s.expiryMap = make(map[string]time.Time)
+
+	// Load new data
+	for key, value := range keyData {
+		s.data[key] = value
+	}
+
+	// Load expiry times
+	for key, expiry := range expiryData {
+		s.expiryMap[key] = expiry
+	}
+
+	return nil
 }
 
 func (s *KeyValueStore) deleteExpiredKey(key string) {

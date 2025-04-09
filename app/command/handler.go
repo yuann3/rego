@@ -25,6 +25,7 @@ func (r *Registry) registerCommands() {
 	r.Register("SET", setCommand)
 	r.Register("GET", getCommand)
 	r.Register("CONFIG", configCommand)
+	r.Register("KEYS", keysCommand)
 }
 
 func (r *Registry) Register(name string, handler Handler) {
