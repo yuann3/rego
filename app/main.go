@@ -17,7 +17,13 @@ import (
 func main() {
 	dirFlag := flag.String("dir", "", "Directory where RDB files are stored")
 	dbFilenameFlag := flag.String("dbfilename", "", "Name of the RDB file")
+	portFlag := flag.Int("port", 6379, "Port to listen on")
 	flag.Parse()
+
+	if *portFlag < 1 || *portFlag > 65535 {
+		fmt.Println("Error: Port number must be between 1 and 65535")
+		os.Exit(1)
+	}
 
 	command.InitConfig(*dirFlag, *dbFilenameFlag)
 
@@ -32,9 +38,9 @@ func main() {
 		}
 	}
 
-	l, err := net.Listen("tcp", "0.0.0.0:6379")
+	l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", *portFlag))
 	if err != nil {
-		fmt.Println("Failed to bind to port 6379")
+		fmt.Printf("Failed to bind to port %d\n", *portFlag)
 		os.Exit(1)
 	}
 	defer l.Close()
@@ -103,3 +109,4 @@ func processCommand(respObj resp.RESP, registry *command.Registry) resp.RESP {
 	args := respObj.Array[1:]
 	return handler(args)
 }
+
