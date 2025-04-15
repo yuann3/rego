@@ -138,3 +138,15 @@ func keysCommand(args []resp.RESP) resp.RESP {
 
 	return resp.NewArray(items)
 }
+
+func infoCommand(args []resp.RESP) resp.RESP {
+	if len(args) != 1 {
+		return resp.NewError("ERR wrong number of arguments for 'info' command")
+	}
+
+	if strings.ToUpper(args[0].String) != "REPLICATION" {
+		return resp.NewError("ERR only replication section is supported")
+	}
+
+	return resp.NewBulkString("role:master")
+}
