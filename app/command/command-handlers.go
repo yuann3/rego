@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-var store = NewKeyValueStore()
-
 func setCommand(args []resp.RESP) resp.RESP {
 	if len(args) < 2 {
 		return resp.NewError("ERR wrong number of arguments for 'set' command")
@@ -73,18 +71,18 @@ func setCommand(args []resp.RESP) resp.RESP {
 
 	if nx {
 		// Only set if the key does not exist
-		if exists := store.Exists(key); exists {
+		if exists := GetStore().Exists(key); exists {
 			return resp.NewNullBulkString()
 		}
 	} else if xx {
 		// Only set if the key already exists
-		if exists := store.Exists(key); !exists {
+		if exists := GetStore().Exists(key); !exists {
 			return resp.NewNullBulkString()
 		}
 	}
 
-	// Store key value pair with expiry
-	store.Set(key, value, expiry)
+	// GetStore() key value pair with expiry
+	GetStore().Set(key, value, expiry)
 
 	return resp.NewSimpleString("OK")
 }
@@ -96,11 +94,47 @@ func getCommand(args []resp.RESP) resp.RESP {
 
 	key := args[0].String
 
-	value, exists := store.Get(key)
+	value, exists := GetStore().Get(key)
 
 	if !exists {
 		return resp.NewNullBulkString()
 	}
 
 	return resp.NewBulkString(value)
+}
+
+func keysCommand(args []resp.RESP) resp.RESP {
+	if len(args) != 1 {
+		return resp.NewError("ERR wrong number of arguments for 'keys' command")
+	}
+
+	pattern := args[0].String
+
+	allKeys := GetStore().Keys()
+
+	var matchedKeys []string
+
+	if pattern == "*" {
+		matchedKeys = allKeys
+	} else if strings.HasSuffix(pattern, "*") {
+		prefix := pattern[:len(pattern)-1]
+		for _, key := range allKeys {
+			if strings.HasPrefix(key, prefix) {
+				matchedKeys = append(matchedKeys, key)
+			}
+		}
+	} else {
+		for _, key := range allKeys {
+			if key == pattern {
+				matchedKeys = append(matchedKeys, key)
+			}
+		}
+	}
+
+	items := make([]resp.RESP, len(matchedKeys))
+	for i, key := range matchedKeys {
+		items[i] = resp.NewBulkString(key)
+	}
+
+	return resp.NewArray(items)
 }

@@ -52,6 +52,23 @@ func (s *KeyValueStore) Get(key string) (string, bool) {
 	return value, exists
 }
 
+func (s *KeyValueStore) Keys() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	keys := make([]string, 0, len(s.data))
+	now := time.Now()
+
+	for key := range s.data {
+		if expiry, hasExpiry := s.expiryMap[key]; hasExpiry && now.After(expiry) {
+			continue
+		}
+		keys = append(keys, key)
+	}
+
+	return keys
+}
+
 func (s *KeyValueStore) Exists(key string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -150,4 +167,14 @@ func (s *KeyValueStore) cleanupExpiredKeys() {
 
 		s.mu.Unlock()
 	}
+}
+
+var storeInstance *KeyValueStore
+
+func init() {
+	storeInstance = NewKeyValueStore()
+}
+
+func GetStore() *KeyValueStore {
+	return storeInstance
 }

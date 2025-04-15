@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/codecrafters-io/redis-starter-go/app/command"
+	"github.com/codecrafters-io/redis-starter-go/app/rdb"
 	"github.com/codecrafters-io/redis-starter-go/app/resp"
 )
 
@@ -19,8 +21,15 @@ func main() {
 
 	command.InitConfig(*dirFlag, *dbFilenameFlag)
 
-	if err := command.LoadRDBFile(*dirFlag, *dbFilenameFlag); err != nil {
-		fmt.Printf("Error loading RDB file: %v\n", err)
+	config := command.GetServerConfig()
+
+	rdbPath := filepath.Join(config.Dir, config.DBFilename)
+	if _, err := os.Stat(rdbPath); err == nil {
+		if err := rdb.Parse(rdbPath, command.GetStore()); err != nil {
+			fmt.Printf("Warning: Failed to load RDB file: %v\n", err)
+		} else {
+			fmt.Printf("Loaded RDB file: %s\n", rdbPath)
+		}
 	}
 
 	l, err := net.Listen("tcp", "0.0.0.0:6379")

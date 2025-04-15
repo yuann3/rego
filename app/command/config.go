@@ -67,3 +67,7 @@ func configGetCommand(args []resp.RESP) resp.RESP {
 
 	return resp.NewArray(resultPairs)
 }
+
+func GetServerConfig() ServerConfig {
+	return serverConfig
+}
