@@ -17,10 +17,8 @@ func setCommand(args []resp.RESP) resp.RESP {
 	key := args[0].String
 	value := args[1].String
 
-	// Default: no expiry
 	expiry := time.Duration(0)
 
-	// Track NX/XX options
 	var nx, xx bool
 
 	for i := 2; i < len(args); i++ {
@@ -72,18 +70,15 @@ func setCommand(args []resp.RESP) resp.RESP {
 	}
 
 	if nx {
-		// Only set if the key does not exist
 		if exists := GetStore().Exists(key); exists {
 			return resp.NewNullBulkString()
 		}
 	} else if xx {
-		// Only set if the key already exists
 		if exists := GetStore().Exists(key); !exists {
 			return resp.NewNullBulkString()
 		}
 	}
 
-	// GetStore() key value pair with expiry
 	GetStore().Set(key, value, expiry)
 
 	return resp.NewSimpleString("OK")
