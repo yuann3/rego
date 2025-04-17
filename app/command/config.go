@@ -1,29 +1,50 @@
 package command
 
 import (
-	"github.com/codecrafters-io/redis-starter-go/app/resp"
+	"fmt"
+	"strconv"
 	"strings"
+
+	"github.com/codecrafters-io/redis-starter-go/app/resp"
 )
 
 type ServerConfig struct {
 	Dir        string
 	DBFilename string
+	IsReplica  bool
+	MasterHost string
+	MasterPort int
 }
 
 var defaultConfig = ServerConfig{
 	Dir:        "./",
 	DBFilename: "dump.rdb",
+	IsReplica:  false,
 }
 
 var serverConfig = defaultConfig
 
-func InitConfig(dir, dbfilename string) {
+func InitConfig(dir, dbfilename string, replicaof string) error {
 	if dir != "" {
 		serverConfig.Dir = dir
 	}
 	if dbfilename != "" {
 		serverConfig.DBFilename = dbfilename
 	}
+	if replicaof != "" {
+		parts := strings.Fields(replicaof)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid --replicaof format: expected 'host port', got '%s'", replicaof)
+		}
+		serverConfig.MasterHost = parts[0]
+		port, err := strconv.Atoi(parts[1])
+		if err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("invalid master port: %s", parts[1])
+		}
+		serverConfig.MasterPort = port
+		serverConfig.IsReplica = true
+	}
+	return nil
 }
 
 func configCommand(args []resp.RESP) resp.RESP {

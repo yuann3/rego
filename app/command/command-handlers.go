@@ -1,10 +1,12 @@
 package command
 
 import (
-	"github.com/codecrafters-io/redis-starter-go/app/resp"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/codecrafters-io/redis-starter-go/app/resp"
 )
 
 func setCommand(args []resp.RESP) resp.RESP {
@@ -148,5 +150,10 @@ func infoCommand(args []resp.RESP) resp.RESP {
 		return resp.NewError("ERR only replication section is supported")
 	}
 
-	return resp.NewBulkString("role:master")
+	role := "master"
+	if GetServerConfig().IsReplica {
+		role = "slave"
+	}
+
+	return resp.NewBulkString(fmt.Sprintf("role:%s", role))
 }

@@ -18,6 +18,7 @@ func main() {
 	dirFlag := flag.String("dir", "", "Directory where RDB files are stored")
 	dbFilenameFlag := flag.String("dbfilename", "", "Name of the RDB file")
 	portFlag := flag.Int("port", 6379, "Port to listen on")
+	replicaofFlag := flag.String("replicaof", "", "Master host and port (e.g., 'localhost 6379')")
 	flag.Parse()
 
 	if *portFlag < 1 || *portFlag > 65535 {
@@ -25,7 +26,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	command.InitConfig(*dirFlag, *dbFilenameFlag)
+	if err := command.InitConfig(*dirFlag, *dbFilenameFlag, *replicaofFlag); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	config := command.GetServerConfig()
 
