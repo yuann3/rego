@@ -32,6 +32,13 @@ func main() {
 	}
 
 	config := command.GetServerConfig()
+	if config.IsReplica {
+		go func() {
+			if err := connectToMaster(config.MasterHost, config.MasterPort); err != nil {
+				fmt.Printf("Error connecting to master: %v\n", err)
+			}
+		}()
+	}
 
 	rdbPath := filepath.Join(config.Dir, config.DBFilename)
 	if _, err := os.Stat(rdbPath); err == nil {
@@ -114,3 +121,26 @@ func processCommand(respObj resp.RESP, registry *command.Registry) resp.RESP {
 	return handler(args)
 }
 
+func connectToMaster(masterHost string, masterPort int) error {
+	conn, err := net.Dial("tcp", net.JoinHostPort(masterHost, fmt.Sprintf("%d", masterPort)))
+	if err != nil {
+		return fmt.Errorf("failed to connect to master: %w", err)
+	}
+	defer conn.Close()
+
+	pingCmd := resp.NewArray([]resp.RESP{resp.NewBulkString("PING")})
+	if _, err := conn.Write([]byte(pingCmd.Marshal())); err != nil {
+		return fmt.Errorf("failed to send PING to master: %w", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	respObj, err := resp.Parse(reader)
+	if err != nil {
+		return fmt.Errorf("failed to read master response: %w", err)
+	}
+	if respObj.Type == resp.SimpleString && respObj.String == "PONG" {
+		fmt.Println("Recevied PONG from master")
+	}
+
+	return nil
+}
