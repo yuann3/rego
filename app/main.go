@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/codecrafters-io/redis-starter-go/app/command"
@@ -34,7 +35,7 @@ func main() {
 	config := command.GetServerConfig()
 	if config.IsReplica {
 		go func() {
-			if err := connectToMaster(config.MasterHost, config.MasterPort); err != nil {
+			if err := connectToMaster(config.MasterHost, config.MasterPort, *portFlag); err != nil {
 				fmt.Printf("Error connecting to master: %v\n", err)
 			}
 		}()
@@ -121,7 +122,7 @@ func processCommand(respObj resp.RESP, registry *command.Registry) resp.RESP {
 	return handler(args)
 }
 
-func connectToMaster(masterHost string, masterPort int) error {
+func connectToMaster(masterHost string, masterPort int, replicaPort int) error {
 	conn, err := net.Dial("tcp", net.JoinHostPort(masterHost, fmt.Sprintf("%d", masterPort)))
 	if err != nil {
 		return fmt.Errorf("failed to connect to master: %w", err)
@@ -138,9 +139,45 @@ func connectToMaster(masterHost string, masterPort int) error {
 	if err != nil {
 		return fmt.Errorf("failed to read master response: %w", err)
 	}
-	if respObj.Type == resp.SimpleString && respObj.String == "PONG" {
-		fmt.Println("Recevied PONG from master")
+	if respObj.Type != resp.SimpleString || respObj.String != "PONG" {
+		return fmt.Errorf("unexpected response to PING: %v", respObj)
+	}
+	fmt.Println("Received PONG from master")
+
+	portCmd := resp.NewArray([]resp.RESP{
+		resp.NewBulkString("REPLCONF"),
+		resp.NewBulkString("listening-port"),
+		resp.NewBulkString(strconv.Itoa(replicaPort)),
+	})
+	if _, err := conn.Write([]byte(portCmd.Marshal())); err != nil {
+		return fmt.Errorf("failed to send REPLCONF listening-port to master: %w", err)
 	}
 
+	respObj, err = resp.Parse(reader)
+	if err != nil {
+		return fmt.Errorf("failed to read master response to REPLCONF listening-port: %w", err)
+	}
+	if respObj.Type != resp.SimpleString || respObj.String != "OK" {
+		return fmt.Errorf("unexpected response to REPLCONF listening-port: %v", respObj)
+	}
+
+	capaCmd := resp.NewArray([]resp.RESP{
+		resp.NewBulkString("REPLCONF"),
+		resp.NewBulkString("capa"),
+		resp.NewBulkString("psync2"),
+	})
+	if _, err := conn.Write([]byte(capaCmd.Marshal())); err != nil {
+		return fmt.Errorf("failed to send REPLCONF capa to master: %w", err)
+	}
+
+	respObj, err = resp.Parse(reader)
+	if err != nil {
+		return fmt.Errorf("failed to read master response to REPLCONF capa: %w", err)
+	}
+	if respObj.Type != resp.SimpleString || respObj.String != "OK" {
+		return fmt.Errorf("unexpected response to REPLCONF capa: %v", respObj)
+	}
+
+	fmt.Println("Handshake completed successfully")
 	return nil
 }
