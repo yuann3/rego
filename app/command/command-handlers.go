@@ -2,12 +2,30 @@ package command
 
 import (
 	"fmt"
+	"math/rand"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/codecrafters-io/redis-starter-go/app/resp"
 )
+
+var charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+var masterReplID string
+var masterReplOffset int = 0
+
+func init() {
+	masterReplID = generateReplID()
+}
+
+func generateReplID() string {
+	b := make([]byte, 40)
+	for i := range b {
+		b[i] = charset[rand.Intn(len(charset))]
+	}
+	return string(b)
+}
 
 func setCommand(args []resp.RESP) resp.RESP {
 	if len(args) < 2 {
@@ -150,5 +168,12 @@ func infoCommand(args []resp.RESP) resp.RESP {
 		role = "slave"
 	}
 
-	return resp.NewBulkString(fmt.Sprintf("role:%s", role))
+	var info string
+	if role == "master" {
+		info = fmt.Sprintf("role:%s\r\nmaster_replid:%s\r\nmaster_repl_offset:%d", role, masterReplID, masterReplOffset)
+	} else {
+		info = fmt.Sprintf("role:%s", role)
+	}
+
+	return resp.NewBulkString(info)
 }
