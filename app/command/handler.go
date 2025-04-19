@@ -1,8 +1,10 @@
 package command
 
 import (
-	"github.com/codecrafters-io/redis-starter-go/app/resp"
+	"fmt"
 	"strings"
+
+	"github.com/codecrafters-io/redis-starter-go/app/resp"
 )
 
 type Handler func(args []resp.RESP) resp.RESP
@@ -27,6 +29,8 @@ func (r *Registry) registerCommands() {
 	r.Register("CONFIG", configCommand)
 	r.Register("KEYS", keysCommand)
 	r.Register("INFO", infoCommand)
+	r.Register("REPLCONF", replconfCommand)
+	r.Register("PSYNC", psyncCommand)
 }
 
 func (r *Registry) Register(name string, handler Handler) {
@@ -50,4 +54,14 @@ func echoCommand(args []resp.RESP) resp.RESP {
 		return resp.NewError("ERR wrong number of arguments for 'echo' command")
 	}
 	return resp.NewBulkString(args[0].String)
+}
+
+func replconfCommand(args []resp.RESP) resp.RESP {
+	return resp.NewSimpleString("OK")
+}
+
+func psyncCommand(args []resp.RESP) resp.RESP {
+	response := fmt.Sprintf("FULLRESYNC %s %d", masterReplID, masterReplOffset)
+
+	return resp.NewSimpleString(response)
 }
