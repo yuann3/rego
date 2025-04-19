@@ -178,6 +178,21 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int) error {
 		return fmt.Errorf("unexpected response to REPLCONF capa: %v", respObj)
 	}
 
+	psyncCmd := resp.NewArray([]resp.RESP{
+		resp.NewBulkString("PSYNC"),
+		resp.NewBulkString("?"),
+		resp.NewBulkString("-1"),
+	})
+	if _, err := conn.Write([]byte(psyncCmd.Marshal())); err != nil {
+		return fmt.Errorf("failed to send REPLCONF capa to master: %w", err)
+	}
+
+	respObj, err = resp.Parse(reader)
+	if err != nil {
+		return fmt.Errorf("failed to read master response to PSYNC: %w", err)
+	}
+	fmt.Println("Received response to PSYNC:", respObj.String)
+
 	fmt.Println("Handshake completed successfully")
 	return nil
 }
