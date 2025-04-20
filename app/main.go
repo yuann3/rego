@@ -84,40 +84,44 @@ func handleClient(conn net.Conn, registry *command.Registry) {
 			break
 		}
 
-		response := processCommand(respObj, registry)
+		response, extraBytes := processCommand(respObj, registry)
 
-		// Write the response
-		_, err = conn.Write([]byte(response.Marshal()))
-		if err != nil {
+		// Write the RESP response
+		if _, err := conn.Write([]byte(response.Marshal())); err != nil {
 			fmt.Println("Error writing to connection:", err.Error())
 			break
+		}
+
+		// Write any extra bytes (e.g., RDB file)
+		if len(extraBytes) > 0 {
+			if _, err := conn.Write(extraBytes); err != nil {
+				fmt.Println("Error writing extra bytes to connection:", err.Error())
+				break
+			}
 		}
 	}
 }
 
-func processCommand(respObj resp.RESP, registry *command.Registry) resp.RESP {
+func processCommand(respObj resp.RESP, registry *command.Registry) (resp.RESP, []byte) {
 	if respObj.Type != resp.Array {
-		return resp.NewError("ERR invalid command format")
+		return resp.NewError("ERR invalid command format"), nil
 	}
 
 	if len(respObj.Array) == 0 {
-		return resp.NewError("ERR empty command")
+		return resp.NewError("ERR empty command"), nil
 	}
 
-	// The first element is the command name
 	cmdNameResp := respObj.Array[0]
 	if cmdNameResp.Type != resp.BulkString {
-		return resp.NewError("ERR command must be a bulk string")
+		return resp.NewError("ERR command must be a bulk string"), nil
 	}
 
-	// Get the command handler
 	cmdName := strings.ToUpper(cmdNameResp.String)
 	handler, exists := registry.Get(cmdName)
 	if !exists {
-		return resp.NewError(fmt.Sprintf("ERR unknown command '%s'", cmdName))
+		return resp.NewError(fmt.Sprintf("ERR unknown command '%s'", cmdName)), nil
 	}
 
-	// Execute the command with arguments
 	args := respObj.Array[1:]
 	return handler(args)
 }
@@ -184,7 +188,7 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int) error {
 		resp.NewBulkString("-1"),
 	})
 	if _, err := conn.Write([]byte(psyncCmd.Marshal())); err != nil {
-		return fmt.Errorf("failed to send REPLCONF capa to master: %w", err)
+		return fmt.Errorf("failed to send PSYNC to master: %w", err)
 	}
 
 	respObj, err = resp.Parse(reader)

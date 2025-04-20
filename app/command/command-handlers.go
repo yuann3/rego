@@ -27,9 +27,9 @@ func generateReplID() string {
 	return string(b)
 }
 
-func setCommand(args []resp.RESP) resp.RESP {
+func setCommand(args []resp.RESP) (resp.RESP, []byte) {
 	if len(args) < 2 {
-		return resp.NewError("ERR wrong number of arguments for 'set' command")
+		return resp.NewError("ERR wrong number of arguments for 'set' command"), nil
 	}
 
 	key := args[0].String
@@ -45,12 +45,12 @@ func setCommand(args []resp.RESP) resp.RESP {
 		switch option {
 		case "PX":
 			if i+1 >= len(args) {
-				return resp.NewError("ERR syntax error")
+				return resp.NewError("ERR syntax error"), nil
 			}
 
 			ms, err := strconv.ParseInt(args[i+1].String, 10, 64)
 			if err != nil || ms <= 0 {
-				return resp.NewError("ERR value is not an integer or out of range")
+				return resp.NewError("ERR value is not an integer or out of range"), nil
 			}
 
 			expiry = time.Duration(ms) * time.Millisecond
@@ -58,13 +58,13 @@ func setCommand(args []resp.RESP) resp.RESP {
 
 		case "EX":
 			if i+1 >= len(args) {
-				return resp.NewError("ERR syntax error")
+				return resp.NewError("ERR syntax error"), nil
 			}
 
 			// Parse expiry in seconds
 			seconds, err := strconv.ParseInt(args[i+1].String, 10, 64)
 			if err != nil || seconds <= 0 {
-				return resp.NewError("ERR value is not an integer or out of range")
+				return resp.NewError("ERR value is not an integer or out of range"), nil
 			}
 
 			expiry = time.Duration(seconds) * time.Second
@@ -73,38 +73,38 @@ func setCommand(args []resp.RESP) resp.RESP {
 		case "NX":
 			nx = true
 			if xx {
-				return resp.NewError("ERR syntax error")
+				return resp.NewError("ERR syntax error"), nil
 			}
 
 		case "XX":
 			xx = true
 			if nx {
-				return resp.NewError("ERR syntax error")
+				return resp.NewError("ERR syntax error"), nil
 			}
 
 		default:
-			return resp.NewError("ERR syntax error")
+			return resp.NewError("ERR syntax error"), nil
 		}
 	}
 
 	if nx {
 		if exists := GetStore().Exists(key); exists {
-			return resp.NewNullBulkString()
+			return resp.NewNullBulkString(), nil
 		}
 	} else if xx {
 		if exists := GetStore().Exists(key); !exists {
-			return resp.NewNullBulkString()
+			return resp.NewNullBulkString(), nil
 		}
 	}
 
 	GetStore().Set(key, value, expiry)
 
-	return resp.NewSimpleString("OK")
+	return resp.NewSimpleString("OK"), nil
 }
 
-func getCommand(args []resp.RESP) resp.RESP {
+func getCommand(args []resp.RESP) (resp.RESP, []byte) {
 	if len(args) != 1 {
-		return resp.NewError("ERR wrong number of arguments for 'get' command")
+		return resp.NewError("ERR wrong number of arguments for 'get' command"), nil
 	}
 
 	key := args[0].String
@@ -112,15 +112,15 @@ func getCommand(args []resp.RESP) resp.RESP {
 	value, exists := GetStore().Get(key)
 
 	if !exists {
-		return resp.NewNullBulkString()
+		return resp.NewNullBulkString(), nil
 	}
 
-	return resp.NewBulkString(value)
+	return resp.NewBulkString(value), nil
 }
 
-func keysCommand(args []resp.RESP) resp.RESP {
+func keysCommand(args []resp.RESP) (resp.RESP, []byte) {
 	if len(args) != 1 {
-		return resp.NewError("ERR wrong number of arguments for 'keys' command")
+		return resp.NewError("ERR wrong number of arguments for 'keys' command"), nil
 	}
 
 	pattern := args[0].String
@@ -151,16 +151,16 @@ func keysCommand(args []resp.RESP) resp.RESP {
 		items[i] = resp.NewBulkString(key)
 	}
 
-	return resp.NewArray(items)
+	return resp.NewArray(items), nil
 }
 
-func infoCommand(args []resp.RESP) resp.RESP {
+func infoCommand(args []resp.RESP) (resp.RESP, []byte) {
 	if len(args) != 1 {
-		return resp.NewError("ERR wrong number of arguments for 'info' command")
+		return resp.NewError("ERR wrong number of arguments for 'info' command"), nil
 	}
 
 	if strings.ToUpper(args[0].String) != "REPLICATION" {
-		return resp.NewError("ERR only replication section is supported")
+		return resp.NewError("ERR only replication section is supported"), nil
 	}
 
 	role := "master"
@@ -175,5 +175,5 @@ func infoCommand(args []resp.RESP) resp.RESP {
 		info = fmt.Sprintf("role:%s", role)
 	}
 
-	return resp.NewBulkString(info)
+	return resp.NewBulkString(info), nil
 }

@@ -47,9 +47,9 @@ func InitConfig(dir, dbfilename string, replicaof string) error {
 	return nil
 }
 
-func configCommand(args []resp.RESP) resp.RESP {
+func configCommand(args []resp.RESP) (resp.RESP, []byte) {
 	if len(args) < 1 {
-		return resp.NewError("ERR wrong number of arguments for 'config' command")
+		return resp.NewError("ERR wrong number of arguments for 'config' command"), nil
 	}
 
 	subCommand := strings.ToUpper(args[0].String)
@@ -58,13 +58,13 @@ func configCommand(args []resp.RESP) resp.RESP {
 	case "GET":
 		return configGetCommand(args[1:])
 	default:
-		return resp.NewError("ERR unknown subcommand '" + subCommand + "'. Try CONFIG GET")
+		return resp.NewError("ERR unknown subcommand '" + subCommand + "'. Try CONFIG GET"), nil
 	}
 }
 
-func configGetCommand(args []resp.RESP) resp.RESP {
+func configGetCommand(args []resp.RESP) (resp.RESP, []byte) {
 	if len(args) < 1 {
-		return resp.NewError("ERR wrong number of arguments for 'config get' command")
+		return resp.NewError("ERR wrong number of arguments for 'config get' command"), nil
 	}
 
 	pattern := strings.ToLower(args[0].String)
@@ -83,10 +83,10 @@ func configGetCommand(args []resp.RESP) resp.RESP {
 		resultPairs = append(resultPairs, resp.NewBulkString("dbfilename"))
 		resultPairs = append(resultPairs, resp.NewBulkString(serverConfig.DBFilename))
 	default:
-		return resp.NewArray(resultPairs)
+		return resp.NewArray(resultPairs), nil
 	}
 
-	return resp.NewArray(resultPairs)
+	return resp.NewArray(resultPairs), nil
 }
 
 func GetServerConfig() ServerConfig {
