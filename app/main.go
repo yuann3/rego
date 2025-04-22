@@ -9,10 +9,16 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/codecrafters-io/redis-starter-go/app/command"
 	"github.com/codecrafters-io/redis-starter-go/app/rdb"
 	"github.com/codecrafters-io/redis-starter-go/app/resp"
+)
+
+var (
+	replicaConn net.Conn
+	connMu      sync.Mutex
 )
 
 func main() {
@@ -84,7 +90,7 @@ func handleClient(conn net.Conn, registry *command.Registry) {
 			break
 		}
 
-		response, extraBytes := processCommand(respObj, registry)
+		response, extraBytes := processCommand(respObj, registry, conn)
 
 		// Write the RESP response
 		if _, err := conn.Write([]byte(response.Marshal())); err != nil {
@@ -102,7 +108,7 @@ func handleClient(conn net.Conn, registry *command.Registry) {
 	}
 }
 
-func processCommand(respObj resp.RESP, registry *command.Registry) (resp.RESP, []byte) {
+func processCommand(respObj resp.RESP, registry *command.Registry, conn net.Conn) (resp.RESP, []byte) {
 	if respObj.Type != resp.Array {
 		return resp.NewError("ERR invalid command format"), nil
 	}
@@ -123,7 +129,25 @@ func processCommand(respObj resp.RESP, registry *command.Registry) (resp.RESP, [
 	}
 
 	args := respObj.Array[1:]
-	return handler(args)
+	response, extraBytes := handler(args)
+
+	if cmdName == "PSYNC" {
+		connMu.Lock()
+		replicaConn = conn
+		connMu.Unlock()
+	}
+
+	if registry.IsWriteCommand(cmdName) && !command.GetServerConfig().IsReplica {
+		connMu.Lock()
+		if replicaConn != nil {
+			if _, err := replicaConn.Write([]byte(respObj.Marshal())); err != nil {
+				fmt.Printf("Error propagating command to replica: %v\n", err)
+			}
+		}
+		connMu.Unlock()
+	}
+
+	return response, extraBytes
 }
 
 func connectToMaster(masterHost string, masterPort int, replicaPort int) error {

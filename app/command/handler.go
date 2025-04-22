@@ -20,36 +20,44 @@ var emptyRDB = []byte{
 type Handler func(args []resp.RESP) (resp.RESP, []byte)
 
 type Registry struct {
-	commands map[string]Handler
+	commands   map[string]Handler
+	isWriteCmd map[string]bool
 }
 
 func NewRegistry() *Registry {
 	r := &Registry{
-		commands: make(map[string]Handler),
+		commands:   make(map[string]Handler),
+		isWriteCmd: make(map[string]bool),
 	}
 	r.registerCommands()
 	return r
 }
 
 func (r *Registry) registerCommands() {
-	r.Register("PING", pingCommand)
-	r.Register("ECHO", echoCommand)
-	r.Register("SET", setCommand)
-	r.Register("GET", getCommand)
-	r.Register("CONFIG", configCommand)
-	r.Register("KEYS", keysCommand)
-	r.Register("INFO", infoCommand)
-	r.Register("REPLCONF", replconfCommand)
-	r.Register("PSYNC", psyncCommand)
+	r.Register("PING", pingCommand, false)
+	r.Register("ECHO", echoCommand, false)
+	r.Register("SET", setCommand, true)
+	r.Register("GET", getCommand, false)
+	r.Register("CONFIG", configCommand, false)
+	r.Register("KEYS", keysCommand, false)
+	r.Register("INFO", infoCommand, false)
+	r.Register("REPLCONF", replconfCommand, false)
+	r.Register("PSYNC", psyncCommand, false)
 }
 
-func (r *Registry) Register(name string, handler Handler) {
-	r.commands[strings.ToUpper(name)] = handler
+func (r *Registry) Register(name string, handler Handler, isWrite bool) {
+	name = strings.ToUpper(name)
+	r.commands[name] = handler
+	r.isWriteCmd[name] = isWrite
 }
 
 func (r *Registry) Get(name string) (Handler, bool) {
 	handler, ok := r.commands[strings.ToUpper(name)]
 	return handler, ok
+}
+
+func (r *Registry) IsWriteCommand(name string) bool {
+	return r.isWriteCmd[strings.ToUpper(name)]
 }
 
 func pingCommand(args []resp.RESP) (resp.RESP, []byte) {
