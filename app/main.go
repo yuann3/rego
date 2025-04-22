@@ -17,8 +17,8 @@ import (
 )
 
 var (
-	replicaConn net.Conn
-	connMu      sync.Mutex
+	replicaConns []net.Conn
+	connMu       sync.RWMutex
 )
 
 func main() {
@@ -133,21 +133,43 @@ func processCommand(respObj resp.RESP, registry *command.Registry, conn net.Conn
 
 	if cmdName == "PSYNC" {
 		connMu.Lock()
-		replicaConn = conn
+		replicaConns = append(replicaConns, conn)
 		connMu.Unlock()
 	}
 
 	if registry.IsWriteCommand(cmdName) && !command.GetServerConfig().IsReplica {
-		connMu.Lock()
-		if replicaConn != nil {
-			if _, err := replicaConn.Write([]byte(respObj.Marshal())); err != nil {
-				fmt.Printf("Error propagating command to replica: %v\n", err)
-			}
-		}
-		connMu.Unlock()
+		propagateCommand(respObj)
 	}
 
 	return response, extraBytes
+}
+
+func propagateCommand(cmd resp.RESP) {
+	connMu.RLock()
+	conns := make([]net.Conn, len(replicaConns))
+	copy(conns, replicaConns)
+	connMu.RUnlock()
+
+	var toRemove []int
+	cmdBytes := []byte(cmd.Marshal())
+
+	for i, conn := range conns {
+		_, err := conn.Write(cmdBytes)
+		if err != nil {
+			fmt.Printf("Error propagating command to replica: %v\n", err)
+			toRemove = append(toRemove, i)
+		}
+	}
+
+	if len(toRemove) > 0 {
+		connMu.Lock()
+		for i := len(toRemove) - 1; i >= 0; i-- {
+			idx := toRemove[i]
+			replicaConns[idx].Close()
+			replicaConns = append(replicaConns[:idx], replicaConns[idx+1:]...)
+		}
+		connMu.Unlock()
+	}
 }
 
 func connectToMaster(masterHost string, masterPort int, replicaPort int) error {
