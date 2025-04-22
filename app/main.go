@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -166,7 +167,7 @@ func propagateCommand(cmd resp.RESP) {
 		for i := len(toRemove) - 1; i >= 0; i-- {
 			idx := toRemove[i]
 			replicaConns[idx].Close()
-			replicaConns = append(replicaConns[:idx], replicaConns[idx+1:]...)
+			replicaConns = slices.Delete(replicaConns, idx, idx+1)
 		}
 		connMu.Unlock()
 	}
