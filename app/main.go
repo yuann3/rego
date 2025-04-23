@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -39,10 +40,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	commandRegistry := command.NewRegistry()
+
 	config := command.GetServerConfig()
 	if config.IsReplica {
 		go func() {
-			if err := connectToMaster(config.MasterHost, config.MasterPort, *portFlag); err != nil {
+			if err := connectToMaster(config.MasterHost, config.MasterPort, *portFlag, commandRegistry); err != nil {
 				fmt.Printf("Error connecting to master: %v\n", err)
 			}
 		}()
@@ -66,8 +69,6 @@ func main() {
 
 	fmt.Println("Server Started")
 
-	commandRegistry := command.NewRegistry()
-
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -79,7 +80,6 @@ func main() {
 	}
 }
 
-// Processing commands from single client connection
 func handleClient(conn net.Conn, registry *command.Registry) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
@@ -93,13 +93,11 @@ func handleClient(conn net.Conn, registry *command.Registry) {
 
 		response, extraBytes := processCommand(respObj, registry, conn)
 
-		// Write the RESP response
 		if _, err := conn.Write([]byte(response.Marshal())); err != nil {
 			fmt.Println("Error writing to connection:", err.Error())
 			break
 		}
 
-		// Write any extra bytes (e.g., RDB file)
 		if len(extraBytes) > 0 {
 			if _, err := conn.Write(extraBytes); err != nil {
 				fmt.Println("Error writing extra bytes to connection:", err.Error())
@@ -173,7 +171,7 @@ func propagateCommand(cmd resp.RESP) {
 	}
 }
 
-func connectToMaster(masterHost string, masterPort int, replicaPort int) error {
+func connectToMaster(masterHost string, masterPort int, replicaPort int, registry *command.Registry) error {
 	conn, err := net.Dial("tcp", net.JoinHostPort(masterHost, fmt.Sprintf("%d", masterPort)))
 	if err != nil {
 		return fmt.Errorf("failed to connect to master: %w", err)
@@ -244,6 +242,63 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int) error {
 	}
 	fmt.Println("Received response to PSYNC:", respObj.String)
 
+	b, err := reader.ReadByte()
+	if err != nil {
+		return fmt.Errorf("failed to read RDB marker: %w", err)
+	}
+
+	if b != '$' {
+		return fmt.Errorf("expected '$', got '%c'", b)
+	}
+
+	sizeStr, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read RDB size: %w", err)
+	}
+
+	sizeStr = strings.TrimSuffix(sizeStr, "\r\n")
+	size, err := strconv.Atoi(sizeStr)
+	if err != nil {
+		return fmt.Errorf("invalid RDB size: %w", err)
+	}
+
+	rdbBytes := make([]byte, size)
+	if _, err := io.ReadFull(reader, rdbBytes); err != nil {
+		return fmt.Errorf("failed to read RDB file: %w", err)
+	}
+
 	fmt.Println("Handshake completed successfully")
-	return nil
+
+	for {
+		respObj, err := resp.Parse(reader)
+		if err != nil {
+			if err.Error() == "EOF" {
+				fmt.Println("Master connection closed")
+				return nil
+			}
+			fmt.Printf("Error parsing propagated command: %v\n", err)
+			continue
+		}
+
+		if respObj.Type != resp.Array || len(respObj.Array) == 0 {
+			fmt.Println("Received invalid command format from master")
+			continue
+		}
+
+		cmdNameResp := respObj.Array[0]
+		if cmdNameResp.Type != resp.BulkString {
+			fmt.Println("Command name is not a bulk string")
+			continue
+		}
+
+		cmdName := strings.ToUpper(cmdNameResp.String)
+		handler, exists := registry.Get(cmdName)
+		if !exists {
+			fmt.Printf("Unknown command from master: %s\n", cmdName)
+			continue
+		}
+
+		args := respObj.Array[1:]
+		handler(args)
+	}
 }
