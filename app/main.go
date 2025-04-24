@@ -269,6 +269,8 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 
 	fmt.Println("Handshake completed successfully")
 
+	offset := 0
+
 	for {
 		respObj, err := resp.Parse(reader)
 		if err != nil {
@@ -280,37 +282,44 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 			continue
 		}
 
-		if respObj.Type != resp.Array || len(respObj.Array) == 0 {
-			fmt.Println("Received invalid command format from master")
-			continue
-		}
+		cmdBytes := respObj.Marshal()
+		cmdSize := len(cmdBytes)
 
-		if len(respObj.Array) == 3 &&
-			respObj.Array[0].Type == resp.BulkString && strings.ToUpper(respObj.Array[0].String) == "REPLCONF" &&
-			respObj.Array[1].Type == resp.BulkString && strings.ToUpper(respObj.Array[1].String) == "GETACK" &&
-			respObj.Array[2].Type == resp.BulkString && respObj.Array[2].String == "*" {
-			response := resp.NewArray([]resp.RESP{
+		if isReplconfGetack(respObj) {
+			ackCmd := resp.NewArray([]resp.RESP{
 				resp.NewBulkString("REPLCONF"),
 				resp.NewBulkString("ACK"),
-				resp.NewBulkString("0"),
+				resp.NewBulkString(strconv.Itoa(offset)),
 			})
-			if _, err := conn.Write([]byte(response.Marshal())); err != nil {
+
+			if _, err := conn.Write([]byte(ackCmd.Marshal())); err != nil {
 				fmt.Printf("Error sending ACK to master: %v\n", err)
 			}
-		} else {
+		} else if respObj.Type == resp.Array && len(respObj.Array) > 0 {
 			cmdNameResp := respObj.Array[0]
-			if cmdNameResp.Type != resp.BulkString {
-				fmt.Println("Command name is not a bulk string")
-				continue
+			if cmdNameResp.Type == resp.BulkString {
+				cmdName := strings.ToUpper(cmdNameResp.String)
+				handler, exists := registry.Get(cmdName)
+				if exists {
+					args := respObj.Array[1:]
+					handler(args)
+				} else {
+					fmt.Printf("Unknown command from master: %s\n", cmdName)
+				}
 			}
-			cmdName := strings.ToUpper(cmdNameResp.String)
-			handler, exists := registry.Get(cmdName)
-			if !exists {
-				fmt.Printf("Unknown command from master: %s\n", cmdName)
-				continue
-			}
-			args := respObj.Array[1:]
-			handler(args)
 		}
+
+		offset += cmdSize
 	}
+}
+
+func isReplconfGetack(cmd resp.RESP) bool {
+	return cmd.Type == resp.Array &&
+		len(cmd.Array) == 3 &&
+		cmd.Array[0].Type == resp.BulkString &&
+		strings.ToUpper(cmd.Array[0].String) == "REPLCONF" &&
+		cmd.Array[1].Type == resp.BulkString &&
+		strings.ToUpper(cmd.Array[1].String) == "GETACK" &&
+		cmd.Array[2].Type == resp.BulkString &&
+		cmd.Array[2].String == "*"
 }
