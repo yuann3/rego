@@ -285,20 +285,32 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 			continue
 		}
 
-		cmdNameResp := respObj.Array[0]
-		if cmdNameResp.Type != resp.BulkString {
-			fmt.Println("Command name is not a bulk string")
-			continue
+		if len(respObj.Array) == 3 &&
+			respObj.Array[0].Type == resp.BulkString && strings.ToUpper(respObj.Array[0].String) == "REPLCONF" &&
+			respObj.Array[1].Type == resp.BulkString && strings.ToUpper(respObj.Array[1].String) == "GETACK" &&
+			respObj.Array[2].Type == resp.BulkString && respObj.Array[2].String == "*" {
+			response := resp.NewArray([]resp.RESP{
+				resp.NewBulkString("REPLCONF"),
+				resp.NewBulkString("ACK"),
+				resp.NewBulkString("0"),
+			})
+			if _, err := conn.Write([]byte(response.Marshal())); err != nil {
+				fmt.Printf("Error sending ACK to master: %v\n", err)
+			}
+		} else {
+			cmdNameResp := respObj.Array[0]
+			if cmdNameResp.Type != resp.BulkString {
+				fmt.Println("Command name is not a bulk string")
+				continue
+			}
+			cmdName := strings.ToUpper(cmdNameResp.String)
+			handler, exists := registry.Get(cmdName)
+			if !exists {
+				fmt.Printf("Unknown command from master: %s\n", cmdName)
+				continue
+			}
+			args := respObj.Array[1:]
+			handler(args)
 		}
-
-		cmdName := strings.ToUpper(cmdNameResp.String)
-		handler, exists := registry.Get(cmdName)
-		if !exists {
-			fmt.Printf("Unknown command from master: %s\n", cmdName)
-			continue
-		}
-
-		args := respObj.Array[1:]
-		handler(args)
 	}
 }
