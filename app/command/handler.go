@@ -2,8 +2,10 @@ package command
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/codecrafters-io/redis-starter-go/app/resp"
 )
@@ -17,7 +19,7 @@ var emptyRDB = []byte{
 	0xf0, 0x6e, 0x3b, 0xfe, 0xc0, 0xff, 0x5a, 0xa2,
 }
 
-type Handler func(args []resp.RESP) (resp.RESP, []byte)
+type Handler func(args []resp.RESP, conn net.Conn) (resp.RESP, []byte)
 
 type Registry struct {
 	commands   map[string]Handler
@@ -43,6 +45,7 @@ func (r *Registry) registerCommands() {
 	r.Register("INFO", infoCommand, false)
 	r.Register("REPLCONF", replconfCommand, false)
 	r.Register("PSYNC", psyncCommand, false)
+	r.Register("WAIT", waitCommand, false)
 }
 
 func (r *Registry) Register(name string, handler Handler, isWrite bool) {
@@ -60,25 +63,25 @@ func (r *Registry) IsWriteCommand(name string) bool {
 	return r.isWriteCmd[strings.ToUpper(name)]
 }
 
-func pingCommand(args []resp.RESP) (resp.RESP, []byte) {
+func pingCommand(args []resp.RESP, conn net.Conn) (resp.RESP, []byte) {
 	if len(args) == 0 {
 		return resp.NewSimpleString("PONG"), nil
 	}
 	return resp.NewBulkString(args[0].String), nil
 }
 
-func echoCommand(args []resp.RESP) (resp.RESP, []byte) {
+func echoCommand(args []resp.RESP, conn net.Conn) (resp.RESP, []byte) {
 	if len(args) == 0 {
 		return resp.NewError("ERR wrong number of arguments for 'echo' command"), nil
 	}
 	return resp.NewBulkString(args[0].String), nil
 }
 
-func replconfCommand(args []resp.RESP) (resp.RESP, []byte) {
+func replconfCommand(args []resp.RESP, conn net.Conn) (resp.RESP, []byte) {
 	return resp.NewSimpleString("OK"), nil
 }
 
-func psyncCommand(args []resp.RESP) (resp.RESP, []byte) {
+func psyncCommand(args []resp.RESP, conn net.Conn) (resp.RESP, []byte) {
 	response := fmt.Sprintf("FULLRESYNC %s %d", masterReplID, masterReplOffset)
 
 	rdbBytes := make([]byte, 0, len(emptyRDB)+16)
@@ -88,4 +91,64 @@ func psyncCommand(args []resp.RESP) (resp.RESP, []byte) {
 	rdbBytes = append(rdbBytes, emptyRDB...)
 
 	return resp.NewSimpleString(response), rdbBytes
+}
+
+func waitCommand(args []resp.RESP, conn net.Conn) (resp.RESP, []byte) {
+	if len(args) != 2 {
+		return resp.NewError("ERR wrong number of arguments for 'wait' command"), nil
+	}
+
+	numReplicas, err := strconv.Atoi(args[0].String)
+	if err != nil || numReplicas < 0 {
+		return resp.NewError("ERR value is not an integer or out of range"), nil
+	}
+
+	timeout, err := strconv.Atoi(args[1].String)
+	if err != nil || timeout < 0 {
+		return resp.NewError("ERR value is not an integer or out of range"), nil
+	}
+
+	clientOffset, err := getClientOffset(conn)
+	if err != nil {
+		return resp.NewInteger(0), nil
+	}
+
+	if numReplicas == 0 {
+		return resp.NewInteger(0), nil
+	}
+
+	count := countAcknowledgingReplicas(clientOffset)
+	if count >= numReplicas {
+		return resp.NewInteger(count), nil
+	}
+
+	if timeout == 0 {
+		for {
+			waitForAcknowledgment()
+
+			count = countAcknowledgingReplicas(clientOffset)
+			if count >= numReplicas {
+				return resp.NewInteger(count), nil
+			}
+		}
+	}
+
+	deadline := time.Now().Add(time.Duration(timeout) * time.Millisecond)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if time.Now().After(deadline) {
+				count = countAcknowledgingReplicas(clientOffset)
+				return resp.NewInteger(count), nil
+			}
+
+			count = countAcknowledgingReplicas(clientOffset)
+			if count >= numReplicas {
+				return resp.NewInteger(count), nil
+			}
+		}
+	}
 }

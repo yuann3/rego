@@ -20,8 +20,26 @@ import (
 
 var (
 	replicaConns []net.Conn
+	replicaAcks  map[net.Conn]int
+	clients      map[net.Conn]*Client
 	connMu       sync.RWMutex
+	ackCond      *sync.Cond
 )
+
+type Client struct {
+	conn            net.Conn
+	lastWriteOffset int
+}
+
+func init() {
+	replicaAcks = make(map[net.Conn]int)
+	clients = make(map[net.Conn]*Client)
+	ackCond = sync.NewCond(&connMu)
+
+	command.RegisterCountAcknowledgingReplicas(countAcknowledgingReplicas)
+	command.RegisterWaitForAcknowledgment(waitForAcknowledgment)
+	command.RegisterGetClientOffset(getClientOffset)
+}
 
 func main() {
 	dirFlag := flag.String("dir", "", "Directory where RDB files are stored")
@@ -81,13 +99,29 @@ func main() {
 }
 
 func handleClient(conn net.Conn, registry *command.Registry) {
-	defer conn.Close()
+	// Create client entry
+	connMu.Lock()
+	clients[conn] = &Client{
+		conn:            conn,
+		lastWriteOffset: 0,
+	}
+	connMu.Unlock()
+
+	defer func() {
+		conn.Close()
+		connMu.Lock()
+		delete(clients, conn)
+		connMu.Unlock()
+	}()
+
 	reader := bufio.NewReader(conn)
 
 	for {
 		respObj, err := resp.Parse(reader)
 		if err != nil {
-			fmt.Println("Error parsing command:", err.Error())
+			if err != io.EOF {
+				fmt.Println("Error parsing command:", err.Error())
+			}
 			break
 		}
 
@@ -128,15 +162,36 @@ func processCommand(respObj resp.RESP, registry *command.Registry, conn net.Conn
 	}
 
 	args := respObj.Array[1:]
-	response, extraBytes := handler(args)
+
+	if cmdName == "REPLCONF" && len(args) >= 2 && strings.ToUpper(args[0].String) == "ACK" && args[1].Type == resp.BulkString {
+		if ackOffset, err := strconv.Atoi(args[1].String); err == nil {
+			connMu.Lock()
+			replicaAcks[conn] = ackOffset
+			ackCond.Broadcast()
+			connMu.Unlock()
+		}
+	}
+
+	response, extraBytes := handler(args, conn)
 
 	if cmdName == "PSYNC" {
 		connMu.Lock()
 		replicaConns = append(replicaConns, conn)
+		replicaAcks[conn] = 0
 		connMu.Unlock()
 	}
 
 	if registry.IsWriteCommand(cmdName) && !command.GetServerConfig().IsReplica {
+		cmdBytes := []byte(respObj.Marshal())
+		cmdSize := len(cmdBytes)
+
+		connMu.Lock()
+		command.IncrementMasterOffset(cmdSize)
+		if client, ok := clients[conn]; ok {
+			client.lastWriteOffset = command.GetMasterOffset()
+		}
+		connMu.Unlock()
+
 		propagateCommand(respObj)
 	}
 
@@ -165,10 +220,43 @@ func propagateCommand(cmd resp.RESP) {
 		for i := len(toRemove) - 1; i >= 0; i-- {
 			idx := toRemove[i]
 			replicaConns[idx].Close()
+			delete(replicaAcks, replicaConns[idx])
 			replicaConns = slices.Delete(replicaConns, idx, idx+1)
 		}
 		connMu.Unlock()
 	}
+}
+
+func countAcknowledgingReplicas(offset int) int {
+	count := 0
+	connMu.RLock()
+	defer connMu.RUnlock()
+
+	for _, conn := range replicaConns {
+		if ack, ok := replicaAcks[conn]; ok && ack >= offset {
+			count++
+		}
+	}
+
+	return count
+}
+
+func waitForAcknowledgment() {
+	connMu.Lock()
+	ackCond.Wait()
+	connMu.Unlock()
+}
+
+func getClientOffset(conn net.Conn) (int, error) {
+	connMu.RLock()
+	defer connMu.RUnlock()
+
+	client, ok := clients[conn]
+	if !ok {
+		return 0, fmt.Errorf("client not found")
+	}
+
+	return client.lastWriteOffset, nil
 }
 
 func connectToMaster(masterHost string, masterPort int, replicaPort int, registry *command.Registry) error {
@@ -302,7 +390,7 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 				handler, exists := registry.Get(cmdName)
 				if exists {
 					args := respObj.Array[1:]
-					handler(args)
+					handler(args, conn)
 				} else {
 					fmt.Printf("Unknown command from master: %s\n", cmdName)
 				}

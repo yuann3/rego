@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"math/rand"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -27,7 +28,15 @@ func generateReplID() string {
 	return string(b)
 }
 
-func setCommand(args []resp.RESP) (resp.RESP, []byte) {
+func GetMasterOffset() int {
+	return masterReplOffset
+}
+
+func IncrementMasterOffset(increment int) {
+	masterReplOffset += increment
+}
+
+func setCommand(args []resp.RESP, conn net.Conn) (resp.RESP, []byte) {
 	if len(args) < 2 {
 		return resp.NewError("ERR wrong number of arguments for 'set' command"), nil
 	}
@@ -61,7 +70,6 @@ func setCommand(args []resp.RESP) (resp.RESP, []byte) {
 				return resp.NewError("ERR syntax error"), nil
 			}
 
-			// Parse expiry in seconds
 			seconds, err := strconv.ParseInt(args[i+1].String, 10, 64)
 			if err != nil || seconds <= 0 {
 				return resp.NewError("ERR value is not an integer or out of range"), nil
@@ -102,7 +110,7 @@ func setCommand(args []resp.RESP) (resp.RESP, []byte) {
 	return resp.NewSimpleString("OK"), nil
 }
 
-func getCommand(args []resp.RESP) (resp.RESP, []byte) {
+func getCommand(args []resp.RESP, conn net.Conn) (resp.RESP, []byte) {
 	if len(args) != 1 {
 		return resp.NewError("ERR wrong number of arguments for 'get' command"), nil
 	}
@@ -118,7 +126,7 @@ func getCommand(args []resp.RESP) (resp.RESP, []byte) {
 	return resp.NewBulkString(value), nil
 }
 
-func keysCommand(args []resp.RESP) (resp.RESP, []byte) {
+func keysCommand(args []resp.RESP, conn net.Conn) (resp.RESP, []byte) {
 	if len(args) != 1 {
 		return resp.NewError("ERR wrong number of arguments for 'keys' command"), nil
 	}
@@ -154,7 +162,7 @@ func keysCommand(args []resp.RESP) (resp.RESP, []byte) {
 	return resp.NewArray(items), nil
 }
 
-func infoCommand(args []resp.RESP) (resp.RESP, []byte) {
+func infoCommand(args []resp.RESP, conn net.Conn) (resp.RESP, []byte) {
 	if len(args) != 1 {
 		return resp.NewError("ERR wrong number of arguments for 'info' command"), nil
 	}
