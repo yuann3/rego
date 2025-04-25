@@ -2,8 +2,10 @@ package command
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/codecrafters-io/redis-starter-go/app/resp"
 )
@@ -20,15 +22,26 @@ var emptyRDB = []byte{
 type Handler func(args []resp.RESP) (resp.RESP, []byte)
 
 type Registry struct {
-	commands   map[string]Handler
-	isWriteCmd map[string]bool
+	commands        map[string]Handler
+	isWriteCmd      map[string]bool
+	clientOffsets   map[string]int
+	replicaAcks     map[net.Conn]int
+	clientOffsetsMu sync.RWMutex
+	replicaAcksMu   sync.RWMutex
+	waitCond        *sync.Cond
 }
 
 func NewRegistry() *Registry {
 	r := &Registry{
-		commands:   make(map[string]Handler),
-		isWriteCmd: make(map[string]bool),
+		commands:      make(map[string]Handler),
+		isWriteCmd:    make(map[string]bool),
+		clientOffsets: make(map[string]int),
+		replicaAcks:   make(map[net.Conn]int),
 	}
+
+	var mu sync.Mutex
+	r.waitCond = sync.NewCond(&mu)
+
 	r.registerCommands()
 	return r
 }
@@ -43,6 +56,7 @@ func (r *Registry) registerCommands() {
 	r.Register("INFO", infoCommand, false)
 	r.Register("REPLCONF", replconfCommand, false)
 	r.Register("PSYNC", psyncCommand, false)
+	r.Register("WAIT", waitCommand, false)
 }
 
 func (r *Registry) Register(name string, handler Handler, isWrite bool) {
@@ -58,6 +72,55 @@ func (r *Registry) Get(name string) (Handler, bool) {
 
 func (r *Registry) IsWriteCommand(name string) bool {
 	return r.isWriteCmd[strings.ToUpper(name)]
+}
+
+func (r *Registry) SetClientOffset(clientID string, offset int) {
+	r.clientOffsetsMu.Lock()
+	defer r.clientOffsetsMu.Unlock()
+	r.clientOffsets[clientID] = offset
+}
+
+func (r *Registry) GetClientOffset(clientID string) int {
+	r.clientOffsetsMu.RLock()
+	defer r.clientOffsetsMu.RUnlock()
+	offset, exists := r.clientOffsets[clientID]
+	if !exists {
+		return 0
+	}
+	return offset
+}
+
+func (r *Registry) UpdateReplicaAck(conn net.Conn, offset int) {
+	r.replicaAcksMu.Lock()
+	r.replicaAcks[conn] = offset
+	r.replicaAcksMu.Unlock()
+	r.waitCond.Broadcast()
+}
+
+func (r *Registry) CountAcknowledgingReplicas(clientOffset int) int {
+	r.replicaAcksMu.RLock()
+	defer r.replicaAcksMu.RUnlock()
+
+	count := 0
+	for _, offset := range r.replicaAcks {
+		if offset >= clientOffset {
+			count++
+		}
+	}
+	return count
+}
+
+func (r *Registry) GetTotalReplicas() int {
+	r.replicaAcksMu.RLock()
+	defer r.replicaAcksMu.RUnlock()
+	return len(r.replicaAcks)
+}
+
+func (r *Registry) RemoveReplica(conn net.Conn) {
+	r.replicaAcksMu.Lock()
+	delete(r.replicaAcks, conn)
+	r.replicaAcksMu.Unlock()
+	r.waitCond.Broadcast()
 }
 
 func pingCommand(args []resp.RESP) (resp.RESP, []byte) {
