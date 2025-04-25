@@ -15,7 +15,7 @@ import (
 func main() {
 	fmt.Println("Starting Redis server...")
 
-	// Parse command line flags
+	// parse command line flags
 	dirFlag := flag.String("dir", ".", "Directory where RDB files are stored")
 	dbFilenameFlag := flag.String("dbfilename", "dump.rdb", "Name of the RDB file")
 	portFlag := flag.Int("port", 6379, "Port to listen on")
@@ -35,14 +35,14 @@ func main() {
 	config := GetServerConfig()
 	registry := NewRegistry()
 
-	// Load RDB file if it exists
+	// load RDB file if it exists
 	rdbPath := filepath.Join(config.Dir, config.DBFilename)
 	if _, err := os.Stat(rdbPath); err == nil {
 		fmt.Printf("Loading RDB file: %s\n", rdbPath)
 		if err := ParseRDB(rdbPath, GetStore()); err != nil {
 			fmt.Printf("Warning: Failed to load RDB file: %v\n", err)
 		} else {
-			// Print loaded keys for debugging
+			// print loaded keys for debugging
 			keys := GetStore().Keys()
 			fmt.Printf("Successfully loaded %d keys from RDB file\n", len(keys))
 			for _, key := range keys {
@@ -52,7 +52,7 @@ func main() {
 		}
 	}
 
-	// Connect to master if this is a replica
+	// connect to master if this is a replica
 	if config.IsReplica {
 		go func() {
 			if err := connectToMaster(config.MasterHost, config.MasterPort, *portFlag, registry); err != nil {
@@ -61,7 +61,7 @@ func main() {
 		}()
 	}
 
-	// Start listening for connections
+	// start listening for connections
 	l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", *portFlag))
 	if err != nil {
 		fmt.Printf("Failed to bind to port %d: %v\n", *portFlag, err)
@@ -109,7 +109,6 @@ func handleClient(conn net.Conn, registry *Registry) {
 			}
 		}
 
-		// Update offset for write commands
 		if registry.IsWriteCommand(respObj.Array[0].String) && !GetServerConfig().IsReplica {
 			bytesWritten := int64(len(response.Marshal()))
 			if len(extraBytes) > 0 {
@@ -143,12 +142,10 @@ func processCommand(respObj RESP, registry *Registry, conn net.Conn) (RESP, []by
 	args := respObj.Array[1:]
 	response, extraBytes := handler(args)
 
-	// Handle replica registration if PSYNC command
 	if cmdName == "PSYNC" {
 		AddReplica(conn)
 	}
 
-	// Update replica offset on ACK
 	if cmdName == "REPLCONF" && len(args) >= 2 &&
 		strings.ToUpper(args[0].String) == "ACK" {
 		offset, err := strconv.ParseInt(args[1].String, 10, 64)
@@ -157,16 +154,13 @@ func processCommand(respObj RESP, registry *Registry, conn net.Conn) (RESP, []by
 		}
 	}
 
-	// Propagate write commands to replicas if we are the master
 	if registry.IsWriteCommand(cmdName) && !GetServerConfig().IsReplica {
-		// Update offset before propagation
 		bytesWritten := int64(len(response.Marshal()))
 		if len(extraBytes) > 0 {
 			bytesWritten += int64(len(extraBytes))
 		}
 		IncrementOffset(bytesWritten)
 
-		// Propagate the command to all replicas
 		fmt.Printf("Propagating %s command to replicas\n", cmdName)
 		propagateCommand(respObj)
 	}
@@ -177,11 +171,10 @@ func processCommand(respObj RESP, registry *Registry, conn net.Conn) (RESP, []by
 func propagateCommand(cmd RESP) {
 	conns := GetReplicaConnections()
 	if len(conns) == 0 {
-		// No replicas to propagate to
+		// no replicas to propagate to
 		return
 	}
 
-	// Marshal the command to bytes
 	cmdBytes := []byte(cmd.Marshal())
 
 	var toRemove []net.Conn
@@ -195,7 +188,6 @@ func propagateCommand(cmd RESP) {
 		}
 	}
 
-	// Remove any replicas with connection errors
 	for _, conn := range toRemove {
 		RemoveReplica(conn)
 		conn.Close()
@@ -209,7 +201,6 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 	}
 	defer conn.Close()
 
-	// Initial PING to verify connection
 	pingCmd := NewArray([]RESP{NewBulkString("PING")})
 	if _, err := conn.Write([]byte(pingCmd.Marshal())); err != nil {
 		return fmt.Errorf("failed to send PING to master: %w", err)
@@ -225,7 +216,6 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 	}
 	fmt.Println("Received PONG from master")
 
-	// Configure replica properties
 	portCmd := NewArray([]RESP{
 		NewBulkString("REPLCONF"),
 		NewBulkString("listening-port"),
@@ -243,7 +233,6 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 		return fmt.Errorf("unexpected response to REPLCONF listening-port: %v", respObj)
 	}
 
-	// Configure replica capabilities
 	capaCmd := NewArray([]RESP{
 		NewBulkString("REPLCONF"),
 		NewBulkString("capa"),
@@ -261,7 +250,6 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 		return fmt.Errorf("unexpected response to REPLCONF capa: %v", respObj)
 	}
 
-	// Start PSYNC process
 	psyncCmd := NewArray([]RESP{
 		NewBulkString("PSYNC"),
 		NewBulkString("?"),
@@ -277,7 +265,7 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 	}
 	fmt.Println("Received response to PSYNC:", respObj.String)
 
-	// Read RDB data from master
+	// read RDB data from master
 	b, err := reader.ReadByte()
 	if err != nil {
 		return fmt.Errorf("failed to read RDB marker: %w", err)
@@ -304,12 +292,11 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 	}
 
 	offsetMu.Lock()
-	currentOffset = 0 // Start from 0 after handshake
+	currentOffset = 0 // start from 0 after handshake
 	offsetMu.Unlock()
 
 	fmt.Println("Handshake completed successfully")
 
-	// Process ongoing commands from master
 	var commandHistory []int64 // Track all command sizes
 
 	for {
@@ -328,11 +315,9 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 			continue
 		}
 
-		// Get the command bytes to accurately track the offset
 		commandBytes := respObj.Marshal()
 		bytesCount := int64(len(commandBytes))
 
-		// Check if this is a GETACK command
 		isGetAck := false
 		if len(respObj.Array) >= 3 &&
 			respObj.Array[0].Type == BulkString && strings.ToUpper(respObj.Array[0].String) == "REPLCONF" &&
@@ -340,10 +325,10 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 			isGetAck = true
 		}
 
-		// Here's the key part:
-		// For normal commands (including first GETACK), immediately add to history
+		// ok this shit stuck me almost 8 hours faking hell
+		// for normal commands (including first GETACK), immediately add to history
 		if !isGetAck {
-			// Just process the command and update offset
+			// just process the command and update offset
 			cmdNameResp := respObj.Array[0]
 			if cmdNameResp.Type != BulkString {
 				fmt.Println("Command name is not a bulk string")
@@ -358,21 +343,19 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 			args := respObj.Array[1:]
 			handler(args)
 
-			// Update command history
+			// then we update command history
 			commandHistory = append(commandHistory, bytesCount)
 			fmt.Printf("Added %d bytes for %s command, history: %v\n",
 				bytesCount, cmdName, commandHistory)
 		} else {
-			// For GETACK commands, calculate the total of all previous commands
+			// for GETACK commands, calculate the total of all previous commands
 			var totalBytes int64
 			for _, size := range commandHistory {
 				totalBytes += size
 			}
 
-			// Store the current command size for future GETACKs
 			commandHistory = append(commandHistory, bytesCount)
 
-			// Update the offset to the sum of all previous commands
 			offsetMu.Lock()
 			currentOffset = totalBytes
 			offsetMu.Unlock()
@@ -380,7 +363,7 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 			fmt.Printf("GETACK received, total bytes in history: %d, offset set to: %d\n",
 				totalBytes, currentOffset)
 
-			// Now process the GETACK command
+			// now process the GETACK command
 			cmdNameResp := respObj.Array[0]
 			cmdName := strings.ToUpper(cmdNameResp.String)
 			handler, exists := registry.Get(cmdName)

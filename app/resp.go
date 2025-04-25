@@ -192,7 +192,7 @@ func parseArray(reader *bufio.Reader) (RESP, error) {
 	}
 
 	items := make([]RESP, 0, count)
-	for i := 0; i < count; i++ {
+	for range count {
 		item, err := Parse(reader)
 		if err != nil {
 			return RESP{}, err
@@ -212,7 +212,6 @@ func readLine(reader *bufio.Reader) (string, error) {
 		}
 
 		if b == '\r' {
-			// Expect \n to follow
 			b, err = reader.ReadByte()
 			if err != nil {
 				return "", err

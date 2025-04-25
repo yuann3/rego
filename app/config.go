@@ -17,16 +17,14 @@ type ServerConfig struct {
 	offsetMutex sync.RWMutex
 }
 
-var defaultConfig = ServerConfig{
+var serverConfig = &ServerConfig{
 	Dir:        "./",
 	DBFilename: "dump.rdb",
 	IsReplica:  false,
 	offset:     0,
 }
 
-var serverConfig = defaultConfig
-
-func InitConfig(dir, dbfilename string, replicaof string) error {
+func InitConfig(dir, dbfilename, replicaof string) error {
 	if dir != "" {
 		serverConfig.Dir = dir
 	}
@@ -49,7 +47,7 @@ func InitConfig(dir, dbfilename string, replicaof string) error {
 	return nil
 }
 
-func GetServerConfig() ServerConfig {
+func GetServerConfig() *ServerConfig {
 	return serverConfig
 }
 
@@ -57,11 +55,9 @@ func IncrementOffset(bytesCount int64) {
 	serverConfig.offsetMutex.Lock()
 	defer serverConfig.offsetMutex.Unlock()
 
-	oldOffset := serverConfig.offset
+	old := serverConfig.offset
 	serverConfig.offset += bytesCount
 
-	fmt.Printf("Incremented offset from %d to %d (+%d bytes)\n",
-		oldOffset, serverConfig.offset, bytesCount)
-
+	fmt.Printf("Incremented offset from %d to %d (+%d bytes)\n", old, serverConfig.offset, bytesCount)
 	IncrementMasterOffset(bytesCount)
 }
