@@ -181,7 +181,7 @@ func propagateCommand(cmd resp.RESP, registry *command.Registry, clientID string
 
 	command.IncrementMasterReplOffset(cmdSize)
 	currentOffset := command.GetMasterReplOffset()
-	
+
 	// Append the current offset to client's offset list instead of replacing it
 	registry.AppendClientOffset(clientID, currentOffset)
 
@@ -352,3 +352,4 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 
 		offset += cmdSize
 	}
+}

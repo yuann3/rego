@@ -2,7 +2,6 @@ package command
 
 import (
 	"fmt"
-	"net"
 	"strconv"
 	"strings"
 
@@ -48,7 +47,7 @@ func InitConfig(dir, dbfilename string, replicaof string) error {
 	return nil
 }
 
-func configCommand(args []resp.RESP, conn net.Conn) (resp.RESP, []byte) {
+func configCommand(args []resp.RESP) (resp.RESP, []byte) {
 	if len(args) < 1 {
 		return resp.NewError("ERR wrong number of arguments for 'config' command"), nil
 	}
@@ -57,13 +56,13 @@ func configCommand(args []resp.RESP, conn net.Conn) (resp.RESP, []byte) {
 
 	switch subCommand {
 	case "GET":
-		return configGetCommand(args[1:], conn)
+		return configGetCommand(args[1:])
 	default:
 		return resp.NewError("ERR unknown subcommand '" + subCommand + "'. Try CONFIG GET"), nil
 	}
 }
 
-func configGetCommand(args []resp.RESP, conn net.Conn) (resp.RESP, []byte) {
+func configGetCommand(args []resp.RESP) (resp.RESP, []byte) {
 	if len(args) < 1 {
 		return resp.NewError("ERR wrong number of arguments for 'config get' command"), nil
 	}
