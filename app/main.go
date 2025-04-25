@@ -8,24 +8,16 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
-	"sync"
-
-	"github.com/codecrafters-io/redis-starter-go/app/command"
-	"github.com/codecrafters-io/redis-starter-go/app/rdb"
-	"github.com/codecrafters-io/redis-starter-go/app/resp"
-)
-
-var (
-	replicaConns []net.Conn
-	connMu       sync.RWMutex
 )
 
 func main() {
-	dirFlag := flag.String("dir", "", "Directory where RDB files are stored")
-	dbFilenameFlag := flag.String("dbfilename", "", "Name of the RDB file")
+	fmt.Println("Starting Redis server...")
+
+	// Parse command line flags
+	dirFlag := flag.String("dir", ".", "Directory where RDB files are stored")
+	dbFilenameFlag := flag.String("dbfilename", "dump.rdb", "Name of the RDB file")
 	portFlag := flag.Int("port", 6379, "Port to listen on")
 	replicaofFlag := flag.String("replicaof", "", "Master host and port (e.g., 'localhost 6379')")
 	flag.Parse()
@@ -35,59 +27,71 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := command.InitConfig(*dirFlag, *dbFilenameFlag, *replicaofFlag); err != nil {
+	if err := InitConfig(*dirFlag, *dbFilenameFlag, *replicaofFlag); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	commandRegistry := command.NewRegistry()
+	config := GetServerConfig()
+	registry := NewRegistry()
 
-	config := command.GetServerConfig()
+	// Load RDB file if it exists
+	rdbPath := filepath.Join(config.Dir, config.DBFilename)
+	if _, err := os.Stat(rdbPath); err == nil {
+		fmt.Printf("Loading RDB file: %s\n", rdbPath)
+		if err := ParseRDB(rdbPath, GetStore()); err != nil {
+			fmt.Printf("Warning: Failed to load RDB file: %v\n", err)
+		} else {
+			// Print loaded keys for debugging
+			keys := GetStore().Keys()
+			fmt.Printf("Successfully loaded %d keys from RDB file\n", len(keys))
+			for _, key := range keys {
+				value, _ := GetStore().Get(key)
+				fmt.Printf("  %s -> %s\n", key, value)
+			}
+		}
+	}
+
+	// Connect to master if this is a replica
 	if config.IsReplica {
 		go func() {
-			if err := connectToMaster(config.MasterHost, config.MasterPort, *portFlag, commandRegistry); err != nil {
+			if err := connectToMaster(config.MasterHost, config.MasterPort, *portFlag, registry); err != nil {
 				fmt.Printf("Error connecting to master: %v\n", err)
 			}
 		}()
 	}
 
-	rdbPath := filepath.Join(config.Dir, config.DBFilename)
-	if _, err := os.Stat(rdbPath); err == nil {
-		if err := rdb.Parse(rdbPath, command.GetStore()); err != nil {
-			fmt.Printf("Warning: Failed to load RDB file: %v\n", err)
-		} else {
-			fmt.Printf("Loaded RDB file: %s\n", rdbPath)
-		}
-	}
-
+	// Start listening for connections
 	l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", *portFlag))
 	if err != nil {
-		fmt.Printf("Failed to bind to port %d\n", *portFlag)
+		fmt.Printf("Failed to bind to port %d: %v\n", *portFlag, err)
 		os.Exit(1)
 	}
 	defer l.Close()
 
-	fmt.Println("Server Started")
+	fmt.Printf("Server started on port %d\n", *portFlag)
 
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			fmt.Println("Error accepting connection: ", err.Error())
+			fmt.Println("Error accepting connection:", err.Error())
 			continue
 		}
 
-		go handleClient(conn, commandRegistry)
+		go handleClient(conn, registry)
 	}
 }
 
-func handleClient(conn net.Conn, registry *command.Registry) {
+func handleClient(conn net.Conn, registry *Registry) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 
 	for {
-		respObj, err := resp.Parse(reader)
+		respObj, err := Parse(reader)
 		if err != nil {
-			fmt.Println("Error parsing command:", err.Error())
+			if err != io.EOF {
+				fmt.Println("Error parsing command:", err.Error())
+			}
 			break
 		}
 
@@ -104,144 +108,176 @@ func handleClient(conn net.Conn, registry *command.Registry) {
 				break
 			}
 		}
+
+		// Update offset for write commands
+		if registry.IsWriteCommand(respObj.Array[0].String) && !GetServerConfig().IsReplica {
+			bytesWritten := int64(len(response.Marshal()))
+			if len(extraBytes) > 0 {
+				bytesWritten += int64(len(extraBytes))
+			}
+			IncrementOffset(bytesWritten)
+		}
 	}
 }
 
-func processCommand(respObj resp.RESP, registry *command.Registry, conn net.Conn) (resp.RESP, []byte) {
-	if respObj.Type != resp.Array {
-		return resp.NewError("ERR invalid command format"), nil
+func processCommand(respObj RESP, registry *Registry, conn net.Conn) (RESP, []byte) {
+	if respObj.Type != Array {
+		return NewError("ERR invalid command format"), nil
 	}
 
 	if len(respObj.Array) == 0 {
-		return resp.NewError("ERR empty command"), nil
+		return NewError("ERR empty command"), nil
 	}
 
 	cmdNameResp := respObj.Array[0]
-	if cmdNameResp.Type != resp.BulkString {
-		return resp.NewError("ERR command must be a bulk string"), nil
+	if cmdNameResp.Type != BulkString {
+		return NewError("ERR command must be a bulk string"), nil
 	}
 
 	cmdName := strings.ToUpper(cmdNameResp.String)
 	handler, exists := registry.Get(cmdName)
 	if !exists {
-		return resp.NewError(fmt.Sprintf("ERR unknown command '%s'", cmdName)), nil
+		return NewError(fmt.Sprintf("ERR unknown command '%s'", cmdName)), nil
 	}
 
 	args := respObj.Array[1:]
 	response, extraBytes := handler(args)
 
+	// Handle replica registration if PSYNC command
 	if cmdName == "PSYNC" {
-		connMu.Lock()
-		replicaConns = append(replicaConns, conn)
-		connMu.Unlock()
+		AddReplica(conn)
 	}
 
-	if registry.IsWriteCommand(cmdName) && !command.GetServerConfig().IsReplica {
+	// Update replica offset on ACK
+	if cmdName == "REPLCONF" && len(args) >= 2 &&
+		strings.ToUpper(args[0].String) == "ACK" {
+		offset, err := strconv.ParseInt(args[1].String, 10, 64)
+		if err == nil {
+			UpdateReplicaOffset(conn, offset)
+		}
+	}
+
+	// Propagate write commands to replicas if we are the master
+	if registry.IsWriteCommand(cmdName) && !GetServerConfig().IsReplica {
+		// Update offset before propagation
+		bytesWritten := int64(len(response.Marshal()))
+		if len(extraBytes) > 0 {
+			bytesWritten += int64(len(extraBytes))
+		}
+		IncrementOffset(bytesWritten)
+
+		// Propagate the command to all replicas
+		fmt.Printf("Propagating %s command to replicas\n", cmdName)
 		propagateCommand(respObj)
 	}
 
 	return response, extraBytes
 }
 
-func propagateCommand(cmd resp.RESP) {
-	connMu.RLock()
-	conns := make([]net.Conn, len(replicaConns))
-	copy(conns, replicaConns)
-	connMu.RUnlock()
+func propagateCommand(cmd RESP) {
+	conns := GetReplicaConnections()
+	if len(conns) == 0 {
+		// No replicas to propagate to
+		return
+	}
 
-	var toRemove []int
+	// Marshal the command to bytes
 	cmdBytes := []byte(cmd.Marshal())
 
-	for i, conn := range conns {
+	var toRemove []net.Conn
+	for _, conn := range conns {
 		_, err := conn.Write(cmdBytes)
 		if err != nil {
 			fmt.Printf("Error propagating command to replica: %v\n", err)
-			toRemove = append(toRemove, i)
+			toRemove = append(toRemove, conn)
+		} else {
+			fmt.Printf("Successfully propagated command to replica: %s\n", cmd.Array[0].String)
 		}
 	}
 
-	if len(toRemove) > 0 {
-		connMu.Lock()
-		for i := len(toRemove) - 1; i >= 0; i-- {
-			idx := toRemove[i]
-			replicaConns[idx].Close()
-			replicaConns = slices.Delete(replicaConns, idx, idx+1)
-		}
-		connMu.Unlock()
+	// Remove any replicas with connection errors
+	for _, conn := range toRemove {
+		RemoveReplica(conn)
+		conn.Close()
 	}
 }
 
-func connectToMaster(masterHost string, masterPort int, replicaPort int, registry *command.Registry) error {
+func connectToMaster(masterHost string, masterPort int, replicaPort int, registry *Registry) error {
 	conn, err := net.Dial("tcp", net.JoinHostPort(masterHost, fmt.Sprintf("%d", masterPort)))
 	if err != nil {
 		return fmt.Errorf("failed to connect to master: %w", err)
 	}
 	defer conn.Close()
 
-	pingCmd := resp.NewArray([]resp.RESP{resp.NewBulkString("PING")})
+	// Initial PING to verify connection
+	pingCmd := NewArray([]RESP{NewBulkString("PING")})
 	if _, err := conn.Write([]byte(pingCmd.Marshal())); err != nil {
 		return fmt.Errorf("failed to send PING to master: %w", err)
 	}
 
 	reader := bufio.NewReader(conn)
-	respObj, err := resp.Parse(reader)
+	respObj, err := Parse(reader)
 	if err != nil {
 		return fmt.Errorf("failed to read master response: %w", err)
 	}
-	if respObj.Type != resp.SimpleString || respObj.String != "PONG" {
+	if respObj.Type != SimpleString || respObj.String != "PONG" {
 		return fmt.Errorf("unexpected response to PING: %v", respObj)
 	}
 	fmt.Println("Received PONG from master")
 
-	portCmd := resp.NewArray([]resp.RESP{
-		resp.NewBulkString("REPLCONF"),
-		resp.NewBulkString("listening-port"),
-		resp.NewBulkString(strconv.Itoa(replicaPort)),
+	// Configure replica properties
+	portCmd := NewArray([]RESP{
+		NewBulkString("REPLCONF"),
+		NewBulkString("listening-port"),
+		NewBulkString(strconv.Itoa(replicaPort)),
 	})
 	if _, err := conn.Write([]byte(portCmd.Marshal())); err != nil {
 		return fmt.Errorf("failed to send REPLCONF listening-port to master: %w", err)
 	}
 
-	respObj, err = resp.Parse(reader)
+	respObj, err = Parse(reader)
 	if err != nil {
 		return fmt.Errorf("failed to read master response to REPLCONF listening-port: %w", err)
 	}
-	if respObj.Type != resp.SimpleString || respObj.String != "OK" {
+	if respObj.Type != SimpleString || respObj.String != "OK" {
 		return fmt.Errorf("unexpected response to REPLCONF listening-port: %v", respObj)
 	}
 
-	capaCmd := resp.NewArray([]resp.RESP{
-		resp.NewBulkString("REPLCONF"),
-		resp.NewBulkString("capa"),
-		resp.NewBulkString("psync2"),
+	// Configure replica capabilities
+	capaCmd := NewArray([]RESP{
+		NewBulkString("REPLCONF"),
+		NewBulkString("capa"),
+		NewBulkString("psync2"),
 	})
 	if _, err := conn.Write([]byte(capaCmd.Marshal())); err != nil {
 		return fmt.Errorf("failed to send REPLCONF capa to master: %w", err)
 	}
 
-	respObj, err = resp.Parse(reader)
+	respObj, err = Parse(reader)
 	if err != nil {
 		return fmt.Errorf("failed to read master response to REPLCONF capa: %w", err)
 	}
-	if respObj.Type != resp.SimpleString || respObj.String != "OK" {
+	if respObj.Type != SimpleString || respObj.String != "OK" {
 		return fmt.Errorf("unexpected response to REPLCONF capa: %v", respObj)
 	}
 
-	psyncCmd := resp.NewArray([]resp.RESP{
-		resp.NewBulkString("PSYNC"),
-		resp.NewBulkString("?"),
-		resp.NewBulkString("-1"),
+	// Start PSYNC process
+	psyncCmd := NewArray([]RESP{
+		NewBulkString("PSYNC"),
+		NewBulkString("?"),
+		NewBulkString("-1"),
 	})
 	if _, err := conn.Write([]byte(psyncCmd.Marshal())); err != nil {
 		return fmt.Errorf("failed to send PSYNC to master: %w", err)
 	}
 
-	respObj, err = resp.Parse(reader)
+	respObj, err = Parse(reader)
 	if err != nil {
 		return fmt.Errorf("failed to read master response to PSYNC: %w", err)
 	}
 	fmt.Println("Received response to PSYNC:", respObj.String)
 
+	// Read RDB data from master
 	b, err := reader.ReadByte()
 	if err != nil {
 		return fmt.Errorf("failed to read RDB marker: %w", err)
@@ -267,12 +303,19 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 		return fmt.Errorf("failed to read RDB file: %w", err)
 	}
 
+	offsetMu.Lock()
+	currentOffset = 0 // Start from 0 after handshake
+	offsetMu.Unlock()
+
 	fmt.Println("Handshake completed successfully")
 
+	// Process ongoing commands from master
+	var commandHistory []int64 // Track all command sizes
+
 	for {
-		respObj, err := resp.Parse(reader)
+		respObj, err := Parse(reader)
 		if err != nil {
-			if err.Error() == "EOF" {
+			if err == io.EOF {
 				fmt.Println("Master connection closed")
 				return nil
 			}
@@ -280,26 +323,29 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 			continue
 		}
 
-		if respObj.Type != resp.Array || len(respObj.Array) == 0 {
+		if respObj.Type != Array || len(respObj.Array) == 0 {
 			fmt.Println("Received invalid command format from master")
 			continue
 		}
 
-		if len(respObj.Array) == 3 &&
-			respObj.Array[0].Type == resp.BulkString && strings.ToUpper(respObj.Array[0].String) == "REPLCONF" &&
-			respObj.Array[1].Type == resp.BulkString && strings.ToUpper(respObj.Array[1].String) == "GETACK" &&
-			respObj.Array[2].Type == resp.BulkString && respObj.Array[2].String == "*" {
-			response := resp.NewArray([]resp.RESP{
-				resp.NewBulkString("REPLCONF"),
-				resp.NewBulkString("ACK"),
-				resp.NewBulkString("0"),
-			})
-			if _, err := conn.Write([]byte(response.Marshal())); err != nil {
-				fmt.Printf("Error sending ACK to master: %v\n", err)
-			}
-		} else {
+		// Get the command bytes to accurately track the offset
+		commandBytes := respObj.Marshal()
+		bytesCount := int64(len(commandBytes))
+
+		// Check if this is a GETACK command
+		isGetAck := false
+		if len(respObj.Array) >= 3 &&
+			respObj.Array[0].Type == BulkString && strings.ToUpper(respObj.Array[0].String) == "REPLCONF" &&
+			respObj.Array[1].Type == BulkString && strings.ToUpper(respObj.Array[1].String) == "GETACK" {
+			isGetAck = true
+		}
+
+		// Here's the key part:
+		// For normal commands (including first GETACK), immediately add to history
+		if !isGetAck {
+			// Just process the command and update offset
 			cmdNameResp := respObj.Array[0]
-			if cmdNameResp.Type != resp.BulkString {
+			if cmdNameResp.Type != BulkString {
 				fmt.Println("Command name is not a bulk string")
 				continue
 			}
@@ -311,6 +357,43 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 			}
 			args := respObj.Array[1:]
 			handler(args)
+
+			// Update command history
+			commandHistory = append(commandHistory, bytesCount)
+			fmt.Printf("Added %d bytes for %s command, history: %v\n",
+				bytesCount, cmdName, commandHistory)
+		} else {
+			// For GETACK commands, calculate the total of all previous commands
+			var totalBytes int64
+			for _, size := range commandHistory {
+				totalBytes += size
+			}
+
+			// Store the current command size for future GETACKs
+			commandHistory = append(commandHistory, bytesCount)
+
+			// Update the offset to the sum of all previous commands
+			offsetMu.Lock()
+			currentOffset = totalBytes
+			offsetMu.Unlock()
+
+			fmt.Printf("GETACK received, total bytes in history: %d, offset set to: %d\n",
+				totalBytes, currentOffset)
+
+			// Now process the GETACK command
+			cmdNameResp := respObj.Array[0]
+			cmdName := strings.ToUpper(cmdNameResp.String)
+			handler, exists := registry.Get(cmdName)
+			if !exists {
+				fmt.Printf("Unknown command from master: %s\n", cmdName)
+				continue
+			}
+			args := respObj.Array[1:]
+			response, _ := handler(args)
+
+			if _, err := conn.Write([]byte(response.Marshal())); err != nil {
+				fmt.Printf("Error sending response to master: %v\n", err)
+			}
 		}
 	}
 }
