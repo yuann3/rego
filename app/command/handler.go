@@ -24,7 +24,7 @@ type Handler func(args []resp.RESP) (resp.RESP, []byte)
 type Registry struct {
 	commands        map[string]Handler
 	isWriteCmd      map[string]bool
-	clientOffsets   map[string]int
+	clientOffsets   map[string][]int
 	replicaAcks     map[net.Conn]int
 	clientOffsetsMu sync.RWMutex
 	replicaAcksMu   sync.RWMutex
@@ -35,7 +35,7 @@ func NewRegistry() *Registry {
 	r := &Registry{
 		commands:      make(map[string]Handler),
 		isWriteCmd:    make(map[string]bool),
-		clientOffsets: make(map[string]int),
+		clientOffsets: make(map[string][]int),
 		replicaAcks:   make(map[net.Conn]int),
 	}
 
@@ -74,20 +74,44 @@ func (r *Registry) IsWriteCommand(name string) bool {
 	return r.isWriteCmd[strings.ToUpper(name)]
 }
 
-func (r *Registry) SetClientOffset(clientID string, offset int) {
+func (r *Registry) AppendClientOffset(clientID string, offset int) {
 	r.clientOffsetsMu.Lock()
 	defer r.clientOffsetsMu.Unlock()
-	r.clientOffsets[clientID] = offset
+	r.clientOffsets[clientID] = append(r.clientOffsets[clientID], offset)
 }
 
-func (r *Registry) GetClientOffset(clientID string) int {
+func (r *Registry) GetClientOffsets(clientID string) []int {
 	r.clientOffsetsMu.RLock()
 	defer r.clientOffsetsMu.RUnlock()
-	offset, exists := r.clientOffsets[clientID]
+	offsets, exists := r.clientOffsets[clientID]
 	if !exists {
+		return []int{}
+	}
+	return offsets
+}
+
+func (r *Registry) ClearClientOffsets(clientID string) {
+	r.clientOffsetsMu.Lock()
+	defer r.clientOffsetsMu.Unlock()
+	delete(r.clientOffsets, clientID)
+}
+
+func (r *Registry) GetMaxClientOffset(clientID string) int {
+	r.clientOffsetsMu.RLock()
+	defer r.clientOffsetsMu.RUnlock()
+
+	offsets, exists := r.clientOffsets[clientID]
+	if !exists || len(offsets) == 0 {
 		return 0
 	}
-	return offset
+
+	max := offsets[0]
+	for _, offset := range offsets {
+		if offset > max {
+			max = offset
+		}
+	}
+	return max
 }
 
 func (r *Registry) UpdateReplicaAck(conn net.Conn, offset int) {

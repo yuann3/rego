@@ -216,14 +216,18 @@ func waitCommand(args []resp.RESP) (resp.RESP, []byte) {
 	}
 
 	registry := GetRegistry()
-	clientID := "client"
-	clientOffset := registry.GetClientOffset(clientID)
+	clientID := "client" // Using a fixed clientID for testing
 
-	if clientOffset == 0 {
+	// Get the maximum offset from the client's write commands
+	clientOffset := registry.GetMaxClientOffset(clientID)
+
+	// Edge case: No previous write commands or no replicas
+	if clientOffset == 0 || registry.GetTotalReplicas() == 0 {
 		totalReplicas := registry.GetTotalReplicas()
 		return resp.NewInteger(totalReplicas), nil
 	}
 
+	// Check if enough replicas have already acknowledged
 	ackCount := registry.CountAcknowledgingReplicas(clientOffset)
 	totalReplicas := registry.GetTotalReplicas()
 
@@ -231,40 +235,68 @@ func waitCommand(args []resp.RESP) (resp.RESP, []byte) {
 		return resp.NewInteger(ackCount), nil
 	}
 
-	var timeoutCh <-chan time.Time
-	if timeout > 0 {
-		timeoutCh = time.After(time.Duration(timeout) * time.Millisecond)
-	}
+	// Zero timeout means block indefinitely
+	if timeout == 0 {
+		registry.waitCond.L.Lock()
+		defer registry.waitCond.L.Unlock()
 
-	registry.waitCond.L.Lock()
-	defer registry.waitCond.L.Unlock()
-
-	for {
-		ackCount = registry.CountAcknowledgingReplicas(clientOffset)
-		if ackCount >= numReplicas || ackCount >= totalReplicas {
-			break
+		for {
+			ackCount = registry.CountAcknowledgingReplicas(clientOffset)
+			if ackCount >= numReplicas || ackCount >= totalReplicas {
+				break
+			}
+			registry.waitCond.Wait()
 		}
 
-		if timeout == 0 {
-			registry.waitCond.Wait()
-		} else {
-			waitCh := make(chan struct{})
+		return resp.NewInteger(ackCount), nil
+	}
+
+	// Non-zero timeout
+	timeoutCh := time.After(time.Duration(timeout) * time.Millisecond)
+	doneCh := make(chan struct{})
+
+	go func() {
+		registry.waitCond.L.Lock()
+		defer registry.waitCond.L.Unlock()
+
+		for {
+			ackCount := registry.CountAcknowledgingReplicas(clientOffset)
+			if ackCount >= numReplicas || ackCount >= totalReplicas {
+				close(doneCh)
+				return
+			}
+
+			// Create a waiter channel for the condition
+			waiterCh := make(chan struct{})
 			go func() {
 				registry.waitCond.Wait()
-				close(waitCh)
+				close(waiterCh)
 			}()
 
 			registry.waitCond.L.Unlock()
+
 			select {
-			case <-waitCh:
-			case <-timeoutCh:
+			case <-waiterCh:
+				// Condition was signaled
 				registry.waitCond.L.Lock()
-				ackCount = registry.CountAcknowledgingReplicas(clientOffset)
-				return resp.NewInteger(ackCount), nil
+				continue
+			case <-timeoutCh:
+				// Timeout occurred
+				registry.waitCond.L.Lock()
+				close(doneCh)
+				return
 			}
-			registry.waitCond.L.Lock()
 		}
-	}
+	}()
+
+	// Wait for either completion or timeout
+	<-doneCh
+
+	// Get final acknowledgment count
+	ackCount = registry.CountAcknowledgingReplicas(clientOffset)
+
+	// Clear client offsets after WAIT completes
+	registry.ClearClientOffsets(clientID)
 
 	return resp.NewInteger(ackCount), nil
 }

@@ -82,6 +82,26 @@ func main() {
 	}
 }
 
+func isReplconfGetack(cmd resp.RESP) bool {
+	return cmd.Type == resp.Array &&
+		len(cmd.Array) == 3 &&
+		cmd.Array[0].Type == resp.BulkString &&
+		strings.ToUpper(cmd.Array[0].String) == "REPLCONF" &&
+		cmd.Array[1].Type == resp.BulkString &&
+		strings.ToUpper(cmd.Array[1].String) == "GETACK" &&
+		cmd.Array[2].Type == resp.BulkString &&
+		cmd.Array[2].String == "*"
+}
+
+func isReplconfAck(cmd resp.RESP) bool {
+	return cmd.Type == resp.Array &&
+		len(cmd.Array) >= 3 &&
+		cmd.Array[0].Type == resp.BulkString &&
+		strings.ToUpper(cmd.Array[0].String) == "REPLCONF" &&
+		cmd.Array[1].Type == resp.BulkString &&
+		strings.ToUpper(cmd.Array[1].String) == "ACK"
+}
+
 func handleClient(conn net.Conn, registry *command.Registry) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
@@ -161,7 +181,9 @@ func propagateCommand(cmd resp.RESP, registry *command.Registry, clientID string
 
 	command.IncrementMasterReplOffset(cmdSize)
 	currentOffset := command.GetMasterReplOffset()
-	registry.SetClientOffset(clientID, currentOffset)
+
+	// Append the current offset to client's offset list instead of replacing it
+	registry.AppendClientOffset(clientID, currentOffset)
 
 	for i, conn := range conns {
 		_, err := conn.Write(cmdBytes)
@@ -330,24 +352,4 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 
 		offset += cmdSize
 	}
-}
-
-func isReplconfGetack(cmd resp.RESP) bool {
-	return cmd.Type == resp.Array &&
-		len(cmd.Array) == 3 &&
-		cmd.Array[0].Type == resp.BulkString &&
-		strings.ToUpper(cmd.Array[0].String) == "REPLCONF" &&
-		cmd.Array[1].Type == resp.BulkString &&
-		strings.ToUpper(cmd.Array[1].String) == "GETACK" &&
-		cmd.Array[2].Type == resp.BulkString &&
-		cmd.Array[2].String == "*"
-}
-
-func isReplconfAck(cmd resp.RESP) bool {
-	return cmd.Type == resp.Array &&
-		len(cmd.Array) >= 3 &&
-		cmd.Array[0].Type == resp.BulkString &&
-		strings.ToUpper(cmd.Array[0].String) == "REPLCONF" &&
-		cmd.Array[1].Type == resp.BulkString &&
-		strings.ToUpper(cmd.Array[1].String) == "ACK"
 }
