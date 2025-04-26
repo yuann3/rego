@@ -34,6 +34,7 @@ func (r *Registry) registerCommands() {
 	r.Register("REPLCONF", replconfCommand, false)
 	r.Register("PSYNC", psyncCommand, false)
 	r.Register("WAIT", waitCommand, false)
+	r.Register("TYPE", typeCommand, false)
 }
 
 func (r *Registry) Register(name string, handler Handler, isWrite bool) {
@@ -305,4 +306,17 @@ func configGetCommand(args []RESP) (RESP, []byte) {
 		return NewArray(pairs), nil
 	}
 	return NewArray(pairs), nil
+}
+
+func typeCommand(args []RESP) (RESP, []byte) {
+	if len(args) != 1 {
+		return NewError("ERR wrong number of arguments for 'type' command"), nil
+	}
+
+	key := args[0].String
+	if !GetStore().Exists(key) {
+		return NewSimpleString("none"), nil
+	}
+
+	return NewSimpleString("string"), nil
 }
