@@ -309,49 +309,61 @@ func configGetCommand(args []RESP) (RESP, []byte) {
 	return NewArray(pairs), nil
 }
 
-func parseStreamID(id string, lastID string) (int64, int64, error) {
+func parseStreamID(id string, lastID string) (int64, int64, bool, error) {
+	if strings.HasSuffix(id, "-*") {
+		timePart := strings.TrimSuffix(id, "-*")
+		ms, err := strconv.ParseInt(timePart, 10, 64)
+		if err != nil {
+			return 0, 0, false, fmt.Errorf("invalid millsencods part")
+		}
+
+		if ms == 0 {
+			return ms, 1, true, nil
+		}
+		return ms, 0, true, nil
+	}
+
 	parts := strings.Split(id, "-")
 	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("invalid stream ID format")
+		return 0, 0, false, fmt.Errorf("invalid stream ID format")
 	}
 
 	ms, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
-		return 0, 0, fmt.Errorf("invalid millsencods part")
+		return 0, 0, false, fmt.Errorf("invalid millsencods part")
 	}
 
 	seq, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
-		return 0, 0, fmt.Errorf("incalid sequence part")
+		return 0, 0, false, fmt.Errorf("invalid sequence part")
 	}
 
 	if ms == 0 && seq == 0 {
-		return 0, 0, fmt.Errorf("ID must be greater than 0-0")
+		return 0, 0, false, fmt.Errorf("ID must be greater than 0-0")
 	}
 
 	if lastID != "" {
 		lastParts := strings.Split(lastID, "-")
 		if len(lastParts) != 2 {
-			return 0, 0, fmt.Errorf("invalid last stream ID format")
+			return 0, 0, false, fmt.Errorf("invalid last stream ID format")
 		}
 
 		lastMs, err := strconv.ParseInt(lastParts[0], 10, 64)
 		if err != nil {
-			return 0, 0, fmt.Errorf("invalid last milliseconds part")
+			return 0, 0, false, fmt.Errorf("invalid last milliseconds part")
 		}
 
 		lastSeq, err := strconv.ParseInt(lastParts[1], 10, 64)
 		if err != nil {
-			return 0, 0, fmt.Errorf("invalid last sequence part")
+			return 0, 0, false, fmt.Errorf("invalid last sequence part")
 		}
 
 		if ms < lastMs || (ms == lastMs && seq <= lastSeq) {
-			return 0, 0, fmt.Errorf("ID is not greater than last entry")
+			return 0, 0, false, fmt.Errorf("ID is not greater than last entry")
 		}
 	}
 
-	return ms, seq, nil
-
+	return ms, seq, false, nil
 }
 
 func xaddCommand(args []RESP) (RESP, []byte) {
@@ -376,7 +388,7 @@ func xaddCommand(args []RESP) (RESP, []byte) {
 		lastID = stream.Entries[len(stream.Entries)-1].ID
 	}
 
-	_, _, err := parseStreamID(id, lastID)
+	ms, seq, autoSeq, err := parseStreamID(id, lastID)
 	if err != nil {
 		if err.Error() == "ID must be greater than 0-0" {
 			return NewError("ERR The ID specified in XADD must be greater than 0-0"), nil
@@ -384,6 +396,28 @@ func xaddCommand(args []RESP) (RESP, []byte) {
 			return NewError("ERR The ID specified in XADD is equal or smaller than the target stream top item"), nil
 		}
 		return NewError("ERR invalid stream ID specified as stream command argument"), nil
+	}
+
+	if autoSeq {
+		if ms == 0 {
+			seq = 1
+		} else {
+			maxSeq := int64(-1)
+			for _, entry := range stream.Entries {
+				entryParts := strings.Split(entry.ID, "-")
+				if len(entryParts) == 2 {
+					entryMs, _ := strconv.ParseInt(entryParts[0], 10, 64)
+					if entryMs == ms {
+						entrySeq, _ := strconv.ParseInt(entryParts[1], 10, 64)
+						if entrySeq > maxSeq {
+							maxSeq = entrySeq
+						}
+					}
+				}
+			}
+			seq = maxSeq + 1
+		}
+		id = fmt.Sprintf("%d-%d", ms, seq)
 	}
 
 	for _, entry := range stream.Entries {
