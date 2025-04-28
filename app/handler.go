@@ -35,6 +35,7 @@ func (r *Registry) registerCommands() {
 	r.Register("PSYNC", psyncCommand, false)
 	r.Register("WAIT", waitCommand, false)
 	r.Register("TYPE", typeCommand, false)
+	r.Register("XADD", xaddCommand, true)
 }
 
 func (r *Registry) Register(name string, handler Handler, isWrite bool) {
@@ -308,15 +309,58 @@ func configGetCommand(args []RESP) (RESP, []byte) {
 	return NewArray(pairs), nil
 }
 
+func xaddCommand(args []RESP) (RESP, []byte) {
+	if len(args) < 3 {
+		return NewError("ERR wrong number of arguments for 'xadd' command"), nil
+	}
+
+	if (len(args)-2)%2 != 0 {
+		return NewError("ERR wrong number of arguments for 'xadd' command"), nil
+	}
+
+	key := args[0].String
+	id := args[1].String
+
+	if !strings.Contains(id, "-") {
+		return NewError("ERR invalid stream ID specified as stream command argument"), nil
+	}
+
+	fields := make(map[string]string)
+	for i := 2; i < len(args); i += 2 {
+		fieldName := args[i].String
+		fieldValue := args[i+1].String
+		fields[fieldName] = fieldValue
+	}
+
+	stream, exists := GetStore().GetStream(key)
+	if !exists {
+		stream = &Stream{Entries: []Entry{}}
+	}
+
+	for _, entry := range stream.Entries {
+		if entry.ID == id {
+			return NewError("ERR The ID specified in XADD already exists in the target stream"), nil
+		}
+	}
+
+	newEntry := Entry{
+		ID:     id,
+		Fields: fields,
+	}
+
+	stream.Entries = append(stream.Entries, newEntry)
+	GetStore().Set(key, stream, 0)
+
+	return NewBulkString(id), nil
+}
+
 func typeCommand(args []RESP) (RESP, []byte) {
 	if len(args) != 1 {
 		return NewError("ERR wrong number of arguments for 'type' command"), nil
 	}
 
 	key := args[0].String
-	if !GetStore().Exists(key) {
-		return NewSimpleString("none"), nil
-	}
+	keyType := GetStore().GetType(key)
 
-	return NewSimpleString("string"), nil
+	return NewSimpleString(keyType), nil
 }

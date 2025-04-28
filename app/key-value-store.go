@@ -6,14 +6,14 @@ import (
 )
 
 type KeyValueStore struct {
-	data      map[string]string
+	data      map[string]interface{}
 	expiryMap map[string]time.Time
 	mu        sync.RWMutex
 }
 
 func NewKeyValueStore() *KeyValueStore {
 	store := &KeyValueStore{
-		data:      make(map[string]string),
+		data:      make(map[string]interface{}),
 		expiryMap: make(map[string]time.Time),
 	}
 
@@ -22,13 +22,12 @@ func NewKeyValueStore() *KeyValueStore {
 	return store
 }
 
-func (s *KeyValueStore) Set(key, value string, expiry time.Duration) {
+func (s *KeyValueStore) Set(key string, value interface{}, expiry time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.data[key] = value
 
-	// If expiry is set, store the expiration time
 	if expiry > 0 {
 		s.expiryMap[key] = time.Now().Add(expiry)
 	} else if _, exists := s.expiryMap[key]; exists {
@@ -48,7 +47,40 @@ func (s *KeyValueStore) Get(key string) (string, bool) {
 	}
 
 	value, exists := s.data[key]
-	return value, exists
+	if !exists {
+		return "", false
+	}
+
+	str, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+
+	return str, true
+}
+
+func (s *KeyValueStore) GetStream(key string) (*Stream, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if expiry, hasExpiry := s.expiryMap[key]; hasExpiry {
+		if time.Now().After(expiry) {
+			go s.deleteExpiredKey(key)
+			return nil, false
+		}
+	}
+
+	value, exists := s.data[key]
+	if !exists {
+		return nil, false
+	}
+
+	stream, ok := value.(*Stream)
+	if !ok {
+		return nil, false
+	}
+
+	return stream, true
 }
 
 func (s *KeyValueStore) Keys() []string {
@@ -79,13 +111,35 @@ func (s *KeyValueStore) Exists(key string) bool {
 
 	if expiry, hasExpiry := s.expiryMap[key]; hasExpiry {
 		if time.Now().After(expiry) {
-			// Key has expired, schedule deletion
 			go s.deleteExpiredKey(key)
 			return false
 		}
 	}
 
 	return true
+}
+
+func (s *KeyValueStore) GetType(key string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if !s.Exists(key) {
+		return "none"
+	}
+
+	value, exists := s.data[key]
+	if !exists {
+		return "none"
+	}
+
+	switch value.(type) {
+	case string:
+		return "string"
+	case *Stream:
+		return "stream"
+	default:
+		return "none"
+	}
 }
 
 func (s *KeyValueStore) deleteExpiredKey(key string) {
