@@ -680,7 +680,7 @@ func xreadCommand(args []RESP) (RESP, []byte) {
 		return NewArray(results), nil
 	}
 
-	if blockMs > 0 {
+	if blockMs >= 0 {
 		return handleBlockingRead(keys, ids, blockMs)
 	}
 
@@ -703,8 +703,12 @@ func handleBlockingRead(keys []RESP, ids []RESP, blockMs int64) (RESP, []byte) {
 	}
 
 	allResults := make(chan []RESP, len(keys))
-	timeout := time.NewTimer(blockTimeout)
-	defer timeout.Stop()
+
+	var timeout *time.Timer
+	if blockMs > 0 {
+		timeout = time.NewTimer(blockTimeout)
+		defer timeout.Stop()
+	}
 
 	go func() {
 		for i, resultCh := range resultChs {
@@ -715,7 +719,12 @@ func handleBlockingRead(keys []RESP, ids []RESP, blockMs int64) (RESP, []byte) {
 					allResults <- result
 					return
 				}
-			case <-timeout.C:
+			case <-func() <-chan time.Time {
+				if timeout != nil {
+					return timeout.C
+				}
+				return make(chan time.Time)
+			}():
 				return
 			}
 			sm.RemoveBlockedClient(key, resultCh)
@@ -733,7 +742,13 @@ func handleBlockingRead(keys []RESP, ids []RESP, blockMs int64) (RESP, []byte) {
 		var results []RESP
 		results = append(results, NewArray(streamResult))
 		return NewArray(results), nil
-	case <-timeout.C:
+	case <-func() <-chan time.Time {
+		if timeout != nil {
+			return timeout.C
+		}
+
+		return make(chan time.Time)
+	}():
 		for i, resultCh := range resultChs {
 			sm.RemoveBlockedClient(keys[i].String, resultCh)
 		}
