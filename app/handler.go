@@ -310,6 +310,11 @@ func configGetCommand(args []RESP) (RESP, []byte) {
 }
 
 func parseStreamID(id string, lastID string) (int64, int64, bool, error) {
+	if id == "*" {
+		ms := time.Now().UnixMilli()
+		return ms, 0, true, nil
+	}
+
 	if strings.HasSuffix(id, "-*") {
 		timePart := strings.TrimSuffix(id, "-*")
 		ms, err := strconv.ParseInt(timePart, 10, 64)
@@ -398,25 +403,29 @@ func xaddCommand(args []RESP) (RESP, []byte) {
 		return NewError("ERR invalid stream ID specified as stream command argument"), nil
 	}
 
+	// real go experience, too lazy to clean it up lol
 	if autoSeq {
-		if ms == 0 {
-			seq = 1
-		} else {
-			maxSeq := int64(-1)
-			for _, entry := range stream.Entries {
-				entryParts := strings.Split(entry.ID, "-")
-				if len(entryParts) == 2 {
-					entryMs, _ := strconv.ParseInt(entryParts[0], 10, 64)
-					if entryMs == ms {
-						entrySeq, _ := strconv.ParseInt(entryParts[1], 10, 64)
-						if entrySeq > maxSeq {
-							maxSeq = entrySeq
+		if strings.HasSuffix(id, "-*") {
+			if ms == 0 {
+				seq = 1
+			} else {
+				maxSeq := int64(-1)
+				for _, entry := range stream.Entries {
+					entryParts := strings.Split(entry.ID, "-")
+					if len(entryParts) == 2 {
+						entryMs, _ := strconv.ParseInt(entryParts[0], 10, 64)
+						if entryMs == ms {
+							entrySeq, _ := strconv.ParseInt(entryParts[1], 10, 64)
+							if entrySeq > maxSeq {
+								maxSeq = entrySeq
+							}
 						}
 					}
 				}
+				seq = maxSeq + 1
 			}
-			seq = maxSeq + 1
 		}
+
 		id = fmt.Sprintf("%d-%d", ms, seq)
 	}
 
