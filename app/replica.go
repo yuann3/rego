@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"slices"
 	"sync"
 	"time"
 )
@@ -25,13 +26,11 @@ var masterReplID string
 var masterReplOffset int = 0
 
 func init() {
-	rand.Seed(time.Now().UnixNano())
 	masterReplID = generateReplID()
 	fmt.Printf("Initialized master with replication ID: %s\n", masterReplID)
 }
 
 func generateReplID() string {
-	// Generate a random 40-character ID
 	charset := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, 40)
 	for i := range b {
@@ -66,7 +65,7 @@ func RemoveReplica(conn net.Conn) {
 	defer replicaMu.Unlock()
 	for i, r := range replicas {
 		if r.Conn == conn {
-			replicas = append(replicas[:i], replicas[i+1:]...)
+			replicas = slices.Delete(replicas, i, i+1)
 			break
 		}
 	}
