@@ -36,6 +36,7 @@ func (r *Registry) registerCommands() {
 	r.Register("WAIT", waitCommand, false)
 	r.Register("TYPE", typeCommand, false)
 	r.Register("XADD", xaddCommand, true)
+	r.Register("XRANGE", xrangeCommand, false)
 }
 
 func (r *Registry) Register(name string, handler Handler, isWrite bool) {
@@ -462,4 +463,130 @@ func typeCommand(args []RESP) (RESP, []byte) {
 	keyType := GetStore().GetType(key)
 
 	return NewSimpleString(keyType), nil
+}
+
+func xrangeCommand(args []RESP) (RESP, []byte) {
+	if len(args) != 3 {
+		return NewError("ERR wrong number of arguments for 'xrange' command"), nil
+	}
+
+	key := args[0].String
+	startID := args[1].String
+	endID := args[2].String
+
+	stream, exists := GetStore().GetStream(key)
+	if !exists {
+		return NewArray([]RESP{}), nil
+	}
+
+	startMs, startSeq, err := parseRangeID(startID, false)
+	if err != nil {
+		return NewError("ERR invalid stream ID specified as stream command argument"), nil
+	}
+
+	endMs, endSeq, err := parseRangeID(endID, true)
+	if err != nil {
+		return NewError("ERR invalid stream ID specified as stream command argument"), nil
+	}
+
+	var results []RESP
+	for _, entry := range stream.Entries {
+		entryMs, entrySeq, err := splitStreamID(entry.ID)
+		if err != nil {
+			continue
+		}
+
+		if compareStreamIDs(startMs, startSeq, entryMs, entrySeq) <= 0 &&
+			compareStreamIDs(entryMs, entrySeq, endMs, endSeq) <= 0 {
+
+			fieldValues := make([]RESP, 0, len(entry.Fields)*2)
+			for field, value := range entry.Fields {
+				fieldValues = append(fieldValues, NewBulkString(field))
+				fieldValues = append(fieldValues, NewBulkString(value))
+			}
+
+			entryArray := NewArray([]RESP{
+				NewBulkString(entry.ID),
+				NewArray(fieldValues),
+			})
+
+			results = append(results, entryArray)
+		}
+	}
+
+	return NewArray(results), nil
+}
+
+func parseRangeID(id string, isEnd bool) (int64, int64, error) {
+	if id == "-" {
+		return 0, 0, nil
+	}
+
+	if id == "+" {
+		return int64(^uint64(0) >> 1), int64(^uint64(0) >> 1), nil
+	}
+
+	parts := strings.Split(id, "-")
+	if len(parts) == 1 {
+		ms, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			return 0, 0, err
+		}
+
+		if isEnd {
+			return ms, int64(^uint64(0) >> 1), nil
+		}
+		return ms, 0, nil
+	}
+
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("invalid stream ID format")
+	}
+
+	ms, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	seq, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return ms, seq, nil
+}
+
+func splitStreamID(id string) (int64, int64, error) {
+	parts := strings.Split(id, "-")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("invalid stream ID format")
+	}
+
+	ms, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	seq, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return ms, seq, nil
+}
+
+func compareStreamIDs(ms1, seq1, ms2, seq2 int64) int {
+	if ms1 < ms2 {
+		return -1
+	}
+	if ms1 > ms2 {
+		return 1
+	}
+	if seq1 < seq2 {
+		return -1
+	}
+	if seq1 > seq2 {
+		return 1
+	}
+	return 0
 }
