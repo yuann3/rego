@@ -597,11 +597,29 @@ func xreadCommand(args []RESP) (RESP, []byte) {
 		return NewError("ERR wrong number of arguments for 'xread' command"), nil
 	}
 
-	if strings.ToUpper(args[0].String) != "STREAMS" {
-		return NewError("ERR syntax error"), nil
+	var blockMs int64 = 0
+	argIndex := 0
+
+	if strings.ToUpper(args[argIndex].String) == "BLOCK" {
+		if argIndex+1 >= len(args) {
+			return NewError("ERR syntax error"), nil
+		}
+
+		ms, err := strconv.ParseInt(args[argIndex+1].String, 10, 64)
+		if err != nil || ms < 0 {
+			return NewError("ERR timeout is not a valid integer or out of range"), nil
+		}
+
+		blockMs = ms
+		argIndex += 2
 	}
 
-	argsAfterStreams := args[1:]
+	if strings.ToUpper(args[argIndex].String) != "STREAMS" {
+		return NewError("ERR syntax error"), nil
+	}
+	argIndex++
+
+	argsAfterStreams := args[argIndex:]
 	if len(argsAfterStreams)%2 != 0 {
 		return NewError("ERR syntax error"), nil
 	}
@@ -611,7 +629,8 @@ func xreadCommand(args []RESP) (RESP, []byte) {
 	ids := argsAfterStreams[numStreams:]
 
 	var results []RESP
-	for i := 0; i < numStreams; i++ {
+
+	for i := range numStreams {
 		key := keys[i].String
 		startID := ids[i].String
 
@@ -657,5 +676,67 @@ func xreadCommand(args []RESP) (RESP, []byte) {
 		}
 	}
 
+	if len(results) > 0 {
+		return NewArray(results), nil
+	}
+
+	if blockMs > 0 {
+		return handleBlockingRead(keys, ids, blockMs)
+	}
+
 	return NewArray(results), nil
+}
+
+func handleBlockingRead(keys []RESP, ids []RESP, blockMs int64) (RESP, []byte) {
+	sm := GetStreamManager()
+	blockTimeout := time.Duration(blockMs) * time.Millisecond
+
+	resultChs := make([]chan []RESP, 0, len(keys))
+	timers := make([]*time.Timer, 0, len(keys))
+
+	for i := range len(keys) {
+		key := keys[i].String
+		startID := ids[i].String
+		resultCh, timer := sm.RegisterBlockedClient(key, startID, blockTimeout)
+		resultChs = append(resultChs, resultCh)
+		timers = append(timers, timer)
+	}
+
+	allResults := make(chan []RESP, len(keys))
+	timeout := time.NewTimer(blockTimeout)
+	defer timeout.Stop()
+
+	go func() {
+		for i, resultCh := range resultChs {
+			key := keys[i].String
+			select {
+			case result := <-resultCh:
+				if len(result) > 0 {
+					allResults <- result
+					return
+				}
+			case <-timeout.C:
+				return
+			}
+			sm.RemoveBlockedClient(key, resultCh)
+		}
+	}()
+
+	select {
+	case streamResult := <-allResults:
+		for i, resultCh := range resultChs {
+			sm.RemoveBlockedClient(keys[i].String, resultCh)
+			if timers[i] != nil {
+				timers[i].Stop()
+			}
+		}
+		var results []RESP
+		results = append(results, NewArray(streamResult))
+		return NewArray(results), nil
+	case <-timeout.C:
+		for i, resultCh := range resultChs {
+			sm.RemoveBlockedClient(keys[i].String, resultCh)
+		}
+		return NewNullBulkString(), nil
+	}
 }

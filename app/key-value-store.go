@@ -26,12 +26,21 @@ func (s *KeyValueStore) Set(key string, value interface{}, expiry time.Duration)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	isStreamUpdate := false
+	if _, ok := value.(*Stream); ok {
+		isStreamUpdate = true
+	}
+
 	s.data[key] = value
 
 	if expiry > 0 {
 		s.expiryMap[key] = time.Now().Add(expiry)
 	} else if _, exists := s.expiryMap[key]; exists {
 		delete(s.expiryMap, key)
+	}
+
+	if isStreamUpdate {
+		go GetStreamManager().NotifyNewEntry(key)
 	}
 }
 
