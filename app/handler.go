@@ -37,6 +37,7 @@ func (r *Registry) registerCommands() {
 	r.Register("TYPE", typeCommand, false)
 	r.Register("XADD", xaddCommand, true)
 	r.Register("XRANGE", xrangeCommand, false)
+	r.Register("XREAD", xreadCommand, false)
 }
 
 func (r *Registry) Register(name string, handler Handler, isWrite bool) {
@@ -589,4 +590,72 @@ func compareStreamIDs(ms1, seq1, ms2, seq2 int64) int {
 		return 1
 	}
 	return 0
+}
+
+func xreadCommand(args []RESP) (RESP, []byte) {
+	if len(args) < 3 {
+		return NewError("ERR wrong number of arguments for 'xread' command"), nil
+	}
+
+	if strings.ToUpper(args[0].String) != "STREAMS" {
+		return NewError("ERR syntax error"), nil
+	}
+
+	argsAfterStreams := args[1:]
+	if len(argsAfterStreams)%2 != 0 {
+		return NewError("ERR syntax error"), nil
+	}
+
+	numStreams := len(argsAfterStreams) / 2
+	keys := argsAfterStreams[:numStreams]
+	ids := argsAfterStreams[numStreams:]
+
+	var results []RESP
+	for i := 0; i < numStreams; i++ {
+		key := keys[i].String
+		startID := ids[i].String
+
+		startMs, startSeq, err := parseRangeID(startID, false)
+		if err != nil {
+			return NewError("ERR invalid stream ID specified as stream command argument"), nil
+		}
+
+		stream, exists := GetStore().GetStream(key)
+		if !exists {
+			continue
+		}
+
+		var streamEntries []RESP
+		for _, entry := range stream.Entries {
+			entryMs, entrySeq, err := splitStreamID(entry.ID)
+			if err != nil {
+				continue
+			}
+
+			if compareStreamIDs(startMs, startSeq, entryMs, entrySeq) < 0 {
+				fieldValues := make([]RESP, 0, len(entry.Fields)*2)
+				for field, value := range entry.Fields {
+					fieldValues = append(fieldValues, NewBulkString(field))
+					fieldValues = append(fieldValues, NewBulkString(value))
+				}
+
+				entryArray := NewArray([]RESP{
+					NewBulkString(entry.ID),
+					NewArray(fieldValues),
+				})
+
+				streamEntries = append(streamEntries, entryArray)
+			}
+		}
+
+		if len(streamEntries) > 0 {
+			streamResult := NewArray([]RESP{
+				NewBulkString(key),
+				NewArray(streamEntries),
+			})
+			results = append(results, streamResult)
+		}
+	}
+
+	return NewArray(results), nil
 }
