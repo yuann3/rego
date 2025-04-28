@@ -309,6 +309,51 @@ func configGetCommand(args []RESP) (RESP, []byte) {
 	return NewArray(pairs), nil
 }
 
+func parseStreamID(id string, lastID string) (int64, int64, error) {
+	parts := strings.Split(id, "-")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("invalid stream ID format")
+	}
+
+	ms, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid millsencods part")
+	}
+
+	seq, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("incalid sequence part")
+	}
+
+	if ms == 0 && seq == 0 {
+		return 0, 0, fmt.Errorf("ID must be greater than 0-0")
+	}
+
+	if lastID != "" {
+		lastParts := strings.Split(lastID, "-")
+		if len(lastParts) != 2 {
+			return 0, 0, fmt.Errorf("invalid last stream ID format")
+		}
+
+		lastMs, err := strconv.ParseInt(lastParts[0], 10, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid last milliseconds part")
+		}
+
+		lastSeq, err := strconv.ParseInt(lastParts[1], 10, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid last sequence part")
+		}
+
+		if ms < lastMs || (ms == lastMs && seq <= lastSeq) {
+			return 0, 0, fmt.Errorf("ID is not greater than last entry")
+		}
+	}
+
+	return ms, seq, nil
+
+}
+
 func xaddCommand(args []RESP) (RESP, []byte) {
 	if len(args) < 3 {
 		return NewError("ERR wrong number of arguments for 'xadd' command"), nil
@@ -321,8 +366,30 @@ func xaddCommand(args []RESP) (RESP, []byte) {
 	key := args[0].String
 	id := args[1].String
 
-	if !strings.Contains(id, "-") {
+	stream, exists := GetStore().GetStream(key)
+	if !exists {
+		stream = &Stream{Entries: []Entry{}}
+	}
+
+	var lastID string
+	if len(stream.Entries) > 0 {
+		lastID = stream.Entries[len(stream.Entries)-1].ID
+	}
+
+	_, _, err := parseStreamID(id, lastID)
+	if err != nil {
+		if err.Error() == "ID must be greater than 0-0" {
+			return NewError("ERR The ID specified in XADD must be greater than 0-0"), nil
+		} else if err.Error() == "ID is not greater than last entry" {
+			return NewError("ERR The ID specified in XADD is equal or smaller than the target stream top item"), nil
+		}
 		return NewError("ERR invalid stream ID specified as stream command argument"), nil
+	}
+
+	for _, entry := range stream.Entries {
+		if entry.ID == id {
+			return NewError("ERR The ID specified in XADD already exists in the target stream"), nil
+		}
 	}
 
 	fields := make(map[string]string)
@@ -330,17 +397,6 @@ func xaddCommand(args []RESP) (RESP, []byte) {
 		fieldName := args[i].String
 		fieldValue := args[i+1].String
 		fields[fieldName] = fieldValue
-	}
-
-	stream, exists := GetStore().GetStream(key)
-	if !exists {
-		stream = &Stream{Entries: []Entry{}}
-	}
-
-	for _, entry := range stream.Entries {
-		if entry.ID == id {
-			return NewError("ERR The ID specified in XADD already exists in the target stream"), nil
-		}
 	}
 
 	newEntry := Entry{
