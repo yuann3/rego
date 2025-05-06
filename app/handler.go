@@ -39,6 +39,7 @@ func (r *Registry) registerCommands() {
 	r.Register("XADD", xaddCommand, true)
 	r.Register("XRANGE", xrangeCommand, false)
 	r.Register("XREAD", xreadCommand, false)
+	r.Register("INCR", incrCommand, true)
 }
 
 func (r *Registry) Register(name string, handler Handler, isWrite bool) {
@@ -744,7 +745,7 @@ func handleBlockingRead(keys []RESP, ids []RESP, blockMs int64) (RESP, []byte) {
 
 	fmt.Printf("Registering %d streams for blocking read. Timeout: %dms\n", numStreams, blockMs)
 
-	for i := 0; i < numStreams; i++ {
+	for i := range numStreams {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
@@ -788,7 +789,7 @@ func handleBlockingRead(keys []RESP, ids []RESP, blockMs int64) (RESP, []byte) {
 
 	select {
 	case firstResult := <-firstResultCh:
-		fmt.Println("Received first result from a stream.")
+		fmt.Println("Received first jresult from a stream.")
 		for i := range numStreams {
 			if clientInfos[i] != nil {
 				sm.RemoveBlockedClient(clientInfos[i].key, clientInfos[i].resultCh)
@@ -798,11 +799,34 @@ func handleBlockingRead(keys []RESP, ids []RESP, blockMs int64) (RESP, []byte) {
 
 	case <-overallTimeoutChan:
 		fmt.Println("Overall blocking read timed out.")
-		for i := 0; i < numStreams; i++ {
+		for i := range numStreams {
 			if clientInfos[i] != nil {
 				sm.RemoveBlockedClient(clientInfos[i].key, clientInfos[i].resultCh)
 			}
 		}
 		return NewNullBulkString(), nil
 	}
+}
+
+func incrCommand(args []RESP) (RESP, []byte) {
+	if len(args) != 1 {
+		return NewError("ERR wrong number of arguments for 'incr' command"), nil
+	}
+
+	key := args[0].String
+	value, exists := GetStore().Get(key)
+
+	if exists {
+		intVal, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return NewError("ERR value is not an integer or out of range"), nil
+		}
+
+		intVal++
+		GetStore().Set(key, strconv.FormatInt(intVal, 10), 0)
+
+		return NewInteger(int(intVal)), nil
+	}
+
+	return NewError("ERR key dose not exist"), nil
 }
