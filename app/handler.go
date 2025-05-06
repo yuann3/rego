@@ -769,7 +769,7 @@ func handleBlockingRead(keys []RESP, ids []RESP, blockMs int64) (RESP, []byte) {
 
 	firstResultCh := make(chan []RESP, 1)
 
-	for i := 0; i < numStreams; i++ {
+	for i := range numStreams {
 		listenerIndex := i
 		go func() {
 			result, ok := <-resultChs[listenerIndex]
@@ -789,7 +789,7 @@ func handleBlockingRead(keys []RESP, ids []RESP, blockMs int64) (RESP, []byte) {
 	select {
 	case firstResult := <-firstResultCh:
 		fmt.Println("Received first result from a stream.")
-		for i := 0; i < numStreams; i++ {
+		for i := range numStreams {
 			if clientInfos[i] != nil {
 				sm.RemoveBlockedClient(clientInfos[i].key, clientInfos[i].resultCh)
 			}
