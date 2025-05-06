@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -480,12 +481,12 @@ func xrangeCommand(args []RESP) (RESP, []byte) {
 		return NewArray([]RESP{}), nil
 	}
 
-	startMs, startSeq, err := parseRangeID(startID, false)
+	startMs, startSeq, err := parseRangeID(startID, false, key)
 	if err != nil {
 		return NewError("ERR invalid stream ID specified as stream command argument"), nil
 	}
 
-	endMs, endSeq, err := parseRangeID(endID, true)
+	endMs, endSeq, err := parseRangeID(endID, true, key)
 	if err != nil {
 		return NewError("ERR invalid stream ID specified as stream command argument"), nil
 	}
@@ -518,13 +519,31 @@ func xrangeCommand(args []RESP) (RESP, []byte) {
 	return NewArray(results), nil
 }
 
-func parseRangeID(id string, isEnd bool) (int64, int64, error) {
+func parseRangeID(id string, isEnd bool, key string) (int64, int64, error) {
 	if id == "-" {
 		return 0, 0, nil
 	}
 
 	if id == "+" {
 		return int64(^uint64(0) >> 1), int64(^uint64(0) >> 1), nil
+	}
+
+	if id == "$" {
+		if key == "" {
+			return 0, 0, fmt.Errorf("key is required for $ ID")
+		}
+
+		stream, exists := GetStore().GetStream(key)
+		if !exists || len(stream.Entries) == 0 {
+			return 0, 0, nil
+		}
+
+		lastEntry := stream.Entries[len(stream.Entries)-1]
+		ms, seq, err := splitStreamID(lastEntry.ID)
+		if err != nil {
+			return 0, 0, err
+		}
+		return ms, seq, nil
 	}
 
 	parts := strings.Split(id, "-")
@@ -599,6 +618,7 @@ func xreadCommand(args []RESP) (RESP, []byte) {
 
 	var blockMs int64 = 0
 	argIndex := 0
+	hasBlock := false
 
 	if strings.ToUpper(args[argIndex].String) == "BLOCK" {
 		if argIndex+1 >= len(args) {
@@ -612,6 +632,7 @@ func xreadCommand(args []RESP) (RESP, []byte) {
 
 		blockMs = ms
 		argIndex += 2
+		hasBlock = true
 	}
 
 	if strings.ToUpper(args[argIndex].String) != "STREAMS" {
@@ -628,13 +649,19 @@ func xreadCommand(args []RESP) (RESP, []byte) {
 	keys := argsAfterStreams[:numStreams]
 	ids := argsAfterStreams[numStreams:]
 
+	for i := range numStreams {
+		if ids[i].String == "$" && !hasBlock {
+			return NewError("ERR $ ID is only valid with BLOCK option"), nil
+		}
+	}
+
 	var results []RESP
 
 	for i := range numStreams {
 		key := keys[i].String
 		startID := ids[i].String
 
-		startMs, startSeq, err := parseRangeID(startID, false)
+		startMs, startSeq, err := parseRangeID(startID, false, key)
 		if err != nil {
 			return NewError("ERR invalid stream ID specified as stream command argument"), nil
 		}
@@ -689,68 +716,92 @@ func xreadCommand(args []RESP) (RESP, []byte) {
 
 func handleBlockingRead(keys []RESP, ids []RESP, blockMs int64) (RESP, []byte) {
 	sm := GetStreamManager()
-	blockTimeout := time.Duration(blockMs) * time.Millisecond
+	var blockTimeout time.Duration
+	hasTimeout := blockMs > 0
 
-	resultChs := make([]chan []RESP, 0, len(keys))
-	timers := make([]*time.Timer, 0, len(keys))
-
-	for i := range len(keys) {
-		key := keys[i].String
-		startID := ids[i].String
-		resultCh, timer := sm.RegisterBlockedClient(key, startID, blockTimeout)
-		resultChs = append(resultChs, resultCh)
-		timers = append(timers, timer)
+	if hasTimeout {
+		blockTimeout = time.Duration(blockMs) * time.Millisecond
 	}
 
-	allResults := make(chan []RESP, len(keys))
+	numStreams := len(keys)
+	resultChs := make([]chan []RESP, numStreams)
+	timers := make([]*time.Timer, numStreams)
+	clientInfos := make([]*BlockedClient, numStreams)
 
-	var timeout *time.Timer
-	if blockMs > 0 {
-		timeout = time.NewTimer(blockTimeout)
-		defer timeout.Stop()
+	var overallTimeoutChan <-chan time.Time
+	var overallTimer *time.Timer
+
+	if hasTimeout {
+		overallTimer = time.NewTimer(blockTimeout)
+		overallTimeoutChan = overallTimer.C
+		defer overallTimer.Stop()
+	} else {
+		overallTimeoutChan = nil
 	}
 
-	go func() {
-		for i, resultCh := range resultChs {
-			key := keys[i].String
-			select {
-			case result := <-resultCh:
-				if len(result) > 0 {
-					allResults <- result
-					return
-				}
-			case <-func() <-chan time.Time {
-				if timeout != nil {
-					return timeout.C
-				}
-				return make(chan time.Time)
-			}():
-				return
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	fmt.Printf("Registering %d streams for blocking read. Timeout: %dms\n", numStreams, blockMs)
+
+	for i := 0; i < numStreams; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			key := keys[index].String
+			startID := ids[index].String
+
+			clientTimeoutDuration := time.Duration(0)
+			if hasTimeout {
+				clientTimeoutDuration = blockTimeout
 			}
-			sm.RemoveBlockedClient(key, resultCh)
-		}
-	}()
+
+			resCh, timer := sm.RegisterBlockedClient(key, startID, clientTimeoutDuration)
+
+			mu.Lock()
+			resultChs[index] = resCh
+			timers[index] = timer
+			clientInfos[index] = &BlockedClient{key: key, resultCh: resCh}
+			mu.Unlock()
+		}(i)
+	}
+	wg.Wait()
+
+	firstResultCh := make(chan []RESP, 1)
+
+	for i := 0; i < numStreams; i++ {
+		listenerIndex := i
+		go func() {
+			result, ok := <-resultChs[listenerIndex]
+			if ok && len(result) > 0 {
+				select {
+				case firstResultCh <- result:
+					fmt.Printf("Goroutine %d: Sent result for key '%s' to aggregate channel.\n", listenerIndex, keys[listenerIndex].String)
+				default:
+					fmt.Printf("Goroutine %d: Aggregate channel already received result. Discarding result for key '%s'.\n", listenerIndex, keys[listenerIndex].String)
+				}
+			} else {
+				fmt.Printf("Goroutine %d: Channel for key '%s' closed or empty result.\n", listenerIndex, keys[listenerIndex].String)
+			}
+		}()
+	}
 
 	select {
-	case streamResult := <-allResults:
-		for i, resultCh := range resultChs {
-			sm.RemoveBlockedClient(keys[i].String, resultCh)
-			if timers[i] != nil {
-				timers[i].Stop()
+	case firstResult := <-firstResultCh:
+		fmt.Println("Received first result from a stream.")
+		for i := 0; i < numStreams; i++ {
+			if clientInfos[i] != nil {
+				sm.RemoveBlockedClient(clientInfos[i].key, clientInfos[i].resultCh)
 			}
 		}
-		var results []RESP
-		results = append(results, NewArray(streamResult))
-		return NewArray(results), nil
-	case <-func() <-chan time.Time {
-		if timeout != nil {
-			return timeout.C
-		}
+		return NewArray([]RESP{NewArray(firstResult)}), nil
 
-		return make(chan time.Time)
-	}():
-		for i, resultCh := range resultChs {
-			sm.RemoveBlockedClient(keys[i].String, resultCh)
+	case <-overallTimeoutChan:
+		fmt.Println("Overall blocking read timed out.")
+		for i := 0; i < numStreams; i++ {
+			if clientInfos[i] != nil {
+				sm.RemoveBlockedClient(clientInfos[i].key, clientInfos[i].resultCh)
+			}
 		}
 		return NewNullBulkString(), nil
 	}

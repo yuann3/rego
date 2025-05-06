@@ -171,7 +171,6 @@ func processCommand(respObj RESP, registry *Registry, conn net.Conn) (RESP, []by
 func propagateCommand(cmd RESP) {
 	conns := GetReplicaConnections()
 	if len(conns) == 0 {
-		// no replicas to propagate to
 		return
 	}
 

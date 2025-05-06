@@ -1,7 +1,7 @@
-// app/stream_manager.go
 package main
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -26,16 +26,32 @@ func GetStreamManager() *StreamManager {
 	return streamManager
 }
 
-func (sm *StreamManager) RegisterBlockedClient(key, startID string, timeout time.Duration) (chan []RESP, *time.Timer) {
+func (sm *StreamManager) RegisterBlockedClient(key, requestedID string, timeout time.Duration) (chan []RESP, *time.Timer) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	resolvedStartID := requestedID
+
+	if requestedID == "$" {
+		stream, exists := GetStore().GetStream(key)
+		if exists && len(stream.Entries) > 0 {
+			resolvedStartID = stream.Entries[len(stream.Entries)-1].ID
+		} else {
+			resolvedStartID = "0-0"
+		}
+		fmt.Printf("Resolved '$' for key '%s' to start ID '%s'\n", key, resolvedStartID)
+	}
+
 	resultCh := make(chan []RESP, 1)
-	timer := time.NewTimer(timeout)
+	var timer *time.Timer
+
+	if timeout > 0 {
+		timer = time.NewTimer(timeout)
+	}
 
 	client := &BlockedClient{
 		key:      key,
-		startID:  startID,
+		startID:  resolvedStartID,
 		resultCh: resultCh,
 		timeout:  timer,
 	}
@@ -59,11 +75,15 @@ func (sm *StreamManager) NotifyNewEntry(key string) {
 		return
 	}
 
+	fmt.Printf("NotifyNewEntry called for key '%s'. Checking %d blocked clients.\n", key, len(clients))
+
 	var remainingClients []*BlockedClient
 
 	for _, client := range clients {
-		startMs, startSeq, err := parseRangeID(client.startID, false)
+		startMs, startSeq, err := parseRangeID(client.startID, false, key)
 		if err != nil {
+			fmt.Printf("Error parsing stored startID '%s' for client on key '%s': %v\n", client.startID, key, err)
+			remainingClients = append(remainingClients, client)
 			continue
 		}
 
@@ -75,6 +95,7 @@ func (sm *StreamManager) NotifyNewEntry(key string) {
 			}
 
 			if compareStreamIDs(startMs, startSeq, entryMs, entrySeq) < 0 {
+
 				fieldValues := make([]RESP, 0, len(entry.Fields)*2)
 				for field, value := range entry.Fields {
 					fieldValues = append(fieldValues, NewBulkString(field))
@@ -91,7 +112,10 @@ func (sm *StreamManager) NotifyNewEntry(key string) {
 		}
 
 		if len(streamEntries) > 0 {
-			client.timeout.Stop()
+			fmt.Printf("Found %d new entries for client on key '%s' starting after '%s'. Notifying.\n", len(streamEntries), key, client.startID)
+			if client.timeout != nil {
+				client.timeout.Stop()
+			}
 			client.resultCh <- []RESP{
 				NewBulkString(key),
 				NewArray(streamEntries),
@@ -102,7 +126,13 @@ func (sm *StreamManager) NotifyNewEntry(key string) {
 		}
 	}
 
-	sm.blockedClients[key] = remainingClients
+	if len(remainingClients) == 0 {
+		delete(sm.blockedClients, key)
+		fmt.Printf("No remaining blocked clients for key '%s'.\n", key)
+	} else {
+		sm.blockedClients[key] = remainingClients
+		fmt.Printf("%d blocked clients remain for key '%s'.\n", len(remainingClients), key)
+	}
 }
 
 func (sm *StreamManager) RemoveBlockedClient(key string, resultCh chan []RESP) {
@@ -115,17 +145,25 @@ func (sm *StreamManager) RemoveBlockedClient(key string, resultCh chan []RESP) {
 	}
 
 	var remainingClients []*BlockedClient
+	found := false
 	for _, client := range clients {
 		if client.resultCh != resultCh {
 			remainingClients = append(remainingClients, client)
 		} else {
-			client.timeout.Stop()
+			found = true
+			if client.timeout != nil {
+				client.timeout.Stop()
+			}
 		}
 	}
 
-	if len(remainingClients) == 0 {
-		delete(sm.blockedClients, key)
-	} else {
-		sm.blockedClients[key] = remainingClients
+	if found {
+		if len(remainingClients) == 0 {
+			delete(sm.blockedClients, key)
+			fmt.Printf("Removed last blocked client for key '%s'.\n", key)
+		} else {
+			sm.blockedClients[key] = remainingClients
+			fmt.Printf("Removed blocked client. %d remain for key '%s'.\n", len(remainingClients), key)
+		}
 	}
 }
