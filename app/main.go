@@ -10,12 +10,42 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
+type ClientState struct {
+	InTransaction bool
+	mu            sync.RWMutex
+}
+
+var (
+	clientStates      = make(map[net.Conn]*ClientState)
+	clientStatesMutex sync.RWMutex
+)
+
+func getClientState(conn net.Conn) *ClientState {
+	clientStatesMutex.RLock()
+	state, exists := clientStates[conn]
+	clientStatesMutex.RUnlock()
+
+	if !exists {
+		clientStatesMutex.Lock()
+		state = &ClientState{}
+		clientStates[conn] = state
+		clientStatesMutex.Unlock()
+	}
+
+	return state
+}
+
+func removeClientState(conn net.Conn) {
+	clientStatesMutex.Lock()
+	delete(clientStates, conn)
+	clientStatesMutex.Unlock()
+}
 func main() {
 	fmt.Println("Starting Redis server...")
 
-	// parse command line flags
 	dirFlag := flag.String("dir", ".", "Directory where RDB files are stored")
 	dbFilenameFlag := flag.String("dbfilename", "dump.rdb", "Name of the RDB file")
 	portFlag := flag.Int("port", 6379, "Port to listen on")
@@ -35,14 +65,12 @@ func main() {
 	config := GetServerConfig()
 	registry := NewRegistry()
 
-	// load RDB file if it exists
 	rdbPath := filepath.Join(config.Dir, config.DBFilename)
 	if _, err := os.Stat(rdbPath); err == nil {
 		fmt.Printf("Loading RDB file: %s\n", rdbPath)
 		if err := ParseRDB(rdbPath, GetStore()); err != nil {
 			fmt.Printf("Warning: Failed to load RDB file: %v\n", err)
 		} else {
-			// print loaded keys for debugging
 			keys := GetStore().Keys()
 			fmt.Printf("Successfully loaded %d keys from RDB file\n", len(keys))
 			for _, key := range keys {
@@ -52,7 +80,6 @@ func main() {
 		}
 	}
 
-	// connect to master if this is a replica
 	if config.IsReplica {
 		go func() {
 			if err := connectToMaster(config.MasterHost, config.MasterPort, *portFlag, registry); err != nil {
@@ -61,7 +88,6 @@ func main() {
 		}()
 	}
 
-	// start listening for connections
 	l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", *portFlag))
 	if err != nil {
 		fmt.Printf("Failed to bind to port %d: %v\n", *portFlag, err)
@@ -84,6 +110,7 @@ func main() {
 
 func handleClient(conn net.Conn, registry *Registry) {
 	defer conn.Close()
+	defer removeClientState(conn)
 	reader := bufio.NewReader(conn)
 
 	for {
@@ -140,7 +167,7 @@ func processCommand(respObj RESP, registry *Registry, conn net.Conn) (RESP, []by
 	}
 
 	args := respObj.Array[1:]
-	response, extraBytes := handler(args)
+	response, extraBytes := handler(args, conn)
 
 	if cmdName == "PSYNC" {
 		AddReplica(conn)
@@ -264,7 +291,6 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 	}
 	fmt.Println("Received response to PSYNC:", respObj.String)
 
-	// read RDB data from master
 	b, err := reader.ReadByte()
 	if err != nil {
 		return fmt.Errorf("failed to read RDB marker: %w", err)
@@ -291,12 +317,12 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 	}
 
 	offsetMu.Lock()
-	currentOffset = 0 // start from 0 after handshake
+	currentOffset = 0
 	offsetMu.Unlock()
 
 	fmt.Println("Handshake completed successfully")
 
-	var commandHistory []int64 // Track all command sizes
+	var commandHistory []int64
 
 	for {
 		respObj, err := Parse(reader)
@@ -324,10 +350,7 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 			isGetAck = true
 		}
 
-		// ok this shit stuck me almost 8 hours faking hell
-		// for normal commands (including first GETACK), immediately add to history
 		if !isGetAck {
-			// just process the command and update offset
 			cmdNameResp := respObj.Array[0]
 			if cmdNameResp.Type != BulkString {
 				fmt.Println("Command name is not a bulk string")
@@ -340,14 +363,12 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 				continue
 			}
 			args := respObj.Array[1:]
-			handler(args)
+			handler(args, conn)
 
-			// then we update command history
 			commandHistory = append(commandHistory, bytesCount)
 			fmt.Printf("Added %d bytes for %s command, history: %v\n",
 				bytesCount, cmdName, commandHistory)
 		} else {
-			// for GETACK commands, calculate the total of all previous commands
 			var totalBytes int64
 			for _, size := range commandHistory {
 				totalBytes += size
@@ -362,7 +383,6 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 			fmt.Printf("GETACK received, total bytes in history: %d, offset set to: %d\n",
 				totalBytes, currentOffset)
 
-			// now process the GETACK command
 			cmdNameResp := respObj.Array[0]
 			cmdName := strings.ToUpper(cmdNameResp.String)
 			handler, exists := registry.Get(cmdName)
@@ -371,7 +391,7 @@ func connectToMaster(masterHost string, masterPort int, replicaPort int, registr
 				continue
 			}
 			args := respObj.Array[1:]
-			response, _ := handler(args)
+			response, _ := handler(args, conn) // Fixed: Added conn argument
 
 			if _, err := conn.Write([]byte(response.Marshal())); err != nil {
 				fmt.Printf("Error sending response to master: %v\n", err)

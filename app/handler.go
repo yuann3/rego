@@ -2,17 +2,24 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-type Handler func(args []RESP) (RESP, []byte)
+type Handler func(args []RESP, conn net.Conn) (RESP, []byte)
 
 type Registry struct {
 	commands   map[string]Handler
 	isWriteCmd map[string]bool
+}
+
+func adaptHandler(fn func(args []RESP) (RESP, []byte)) Handler {
+	return func(args []RESP, conn net.Conn) (RESP, []byte) {
+		return fn(args)
+	}
 }
 
 func NewRegistry() *Registry {
@@ -25,23 +32,23 @@ func NewRegistry() *Registry {
 }
 
 func (r *Registry) registerCommands() {
-	r.Register("PING", pingCommand, false)
-	r.Register("ECHO", echoCommand, false)
-	r.Register("SET", setCommand, true)
-	r.Register("GET", getCommand, false)
-	r.Register("CONFIG", configCommand, false)
-	r.Register("KEYS", keysCommand, false)
-	r.Register("INFO", infoCommand, false)
-	r.Register("REPLCONF", replconfCommand, false)
-	r.Register("PSYNC", psyncCommand, false)
-	r.Register("WAIT", waitCommand, false)
-	r.Register("TYPE", typeCommand, false)
-	r.Register("XADD", xaddCommand, true)
-	r.Register("XRANGE", xrangeCommand, false)
-	r.Register("XREAD", xreadCommand, false)
-	r.Register("INCR", incrCommand, true)
-	r.Register("MULTI", multiCommand, false)
-	r.Register("EXEC", execCommand, false)
+	r.Register("PING", adaptHandler(pingCommand), false)
+	r.Register("ECHO", adaptHandler(echoCommand), false)
+	r.Register("SET", adaptHandler(setCommand), true)
+	r.Register("GET", adaptHandler(getCommand), false)
+	r.Register("CONFIG", adaptHandler(configCommand), false)
+	r.Register("KEYS", adaptHandler(keysCommand), false)
+	r.Register("INFO", adaptHandler(infoCommand), false)
+	r.Register("REPLCONF", adaptHandler(replconfCommand), false)
+	r.Register("PSYNC", adaptHandler(psyncCommand), false)
+	r.Register("WAIT", adaptHandler(waitCommand), false)
+	r.Register("TYPE", adaptHandler(typeCommand), false)
+	r.Register("XADD", adaptHandler(xaddCommand), true)
+	r.Register("XRANGE", adaptHandler(xrangeCommand), false)
+	r.Register("XREAD", adaptHandler(xreadCommand), false)
+	r.Register("INCR", adaptHandler(incrCommand), true)
+	r.Register("MULTI", multiCommand, true)
+	r.Register("EXEC", execCommand, true)
 }
 
 func (r *Registry) Register(name string, handler Handler, isWrite bool) {
@@ -232,12 +239,12 @@ func replconfCommand(args []RESP) (RESP, []byte) {
 func psyncCommand(args []RESP) (RESP, []byte) {
 	response := fmt.Sprintf("FULLRESYNC %s %d", masterReplID, masterReplOffset)
 	emptyRDB := []byte{
-		0x52, 0x45, 0x44, 0x49, 0x53, 0x30, 0x30, 0x31, 0x31, 0xfa, 0x09, 0x72, 0x65, 0x64, 0x69, 0x73,
-		0x2d, 0x76, 0x65, 0x72, 0x05, 0x37, 0x2e, 0x32, 0x2e, 0x30, 0xfa, 0x0a, 0x72, 0x65, 0x64, 0x69,
-		0x73, 0x2d, 0x62, 0x69, 0x74, 0x73, 0xc0, 0x40, 0xfa, 0x05, 0x63, 0x74, 0x69, 0x6d, 0x65, 0xc2,
-		0x6d, 0x08, 0xbc, 0x65, 0xfa, 0x08, 0x75, 0x73, 0x65, 0x64, 0x2d, 0x6d, 0x65, 0x6d, 0xc2, 0xb0,
-		0xc4, 0x10, 0x00, 0xfa, 0x08, 0x61, 0x6f, 0x66, 0x2d, 0x62, 0x61, 0x73, 0x65, 0xc0, 0x00, 0xff,
-		0xf0, 0x6e, 0x3b, 0xfe, 0xc0, 0xff, 0x5a, 0xa2,
+		0x52, 0x45, 0x44, 0x49, 0x53, 0x30, 0x30, 0x31, 0x31, 0xfa, 0x09, 0x72, 0x65, 0x64, 0x69,
+		0x73, 0x2d, 0x76, 0x65, 0x72, 0x05, 0x37, 0x2e, 0x32, 0x2e, 0x30, 0xfa, 0x0a, 0x72, 0x65,
+		0x64, 0x69, 0x73, 0x2d, 0x62, 0x69, 0x74, 0x73, 0xc0, 0x40, 0xfa, 0x05, 0x63, 0x74, 0x69,
+		0x6d, 0x65, 0xc2, 0x6d, 0x08, 0xbc, 0x65, 0xfa, 0x08, 0x75, 0x73, 0x65, 0x64, 0x2d, 0x6d,
+		0x65, 0x6d, 0xc2, 0xb0, 0xc4, 0x10, 0x00, 0xfa, 0x08, 0x61, 0x6f, 0x66, 0x2d, 0x62, 0x61,
+		0x73, 0x65, 0xc0, 0x00, 0xff, 0xf0, 0x6e, 0x3b, 0xfe, 0xc0, 0xff, 0x5a, 0xa2,
 	}
 	rdbBytes := make([]byte, 0, len(emptyRDB)+16)
 	rdbBytes = append(rdbBytes, '$')
@@ -409,7 +416,6 @@ func xaddCommand(args []RESP) (RESP, []byte) {
 		return NewError("ERR invalid stream ID specified as stream command argument"), nil
 	}
 
-	// real go experience, too lazy to clean it up lol
 	if autoSeq {
 		if strings.HasSuffix(id, "-*") {
 			if ms == 0 {
@@ -682,6 +688,7 @@ func xreadCommand(args []RESP) (RESP, []byte) {
 			}
 
 			if compareStreamIDs(startMs, startSeq, entryMs, entrySeq) < 0 {
+
 				fieldValues := make([]RESP, 0, len(entry.Fields)*2)
 				for field, value := range entry.Fields {
 					fieldValues = append(fieldValues, NewBulkString(field))
@@ -834,17 +841,36 @@ func incrCommand(args []RESP) (RESP, []byte) {
 	return NewInteger(int(intVal)), nil
 }
 
-func multiCommand(args []RESP) (RESP, []byte) {
+func multiCommand(args []RESP, conn net.Conn) (RESP, []byte) {
 	if len(args) > 0 {
 		return NewError("ERR wrong number of arguments for 'multi' command"), nil
 	}
 
+	state := getClientState(conn)
+	state.mu.Lock()
+	state.InTransaction = true
+	state.mu.Unlock()
+
 	return NewSimpleString("OK"), nil
 }
 
-func execCommand(args []RESP) (RESP, []byte) {
+func execCommand(args []RESP, conn net.Conn) (RESP, []byte) {
 	if len(args) > 0 {
 		return NewError("ERR wrong number of arguments for 'exec' command"), nil
 	}
-	return NewError("ERR EXEC without MULTI"), nil
+
+	state := getClientState(conn)
+	state.mu.RLock()
+	inTransaction := state.InTransaction
+	state.mu.RUnlock()
+
+	if !inTransaction {
+		return NewError("ERR EXEC without MULTI"), nil
+	}
+
+	state.mu.Lock()
+	state.InTransaction = false
+	state.mu.Unlock()
+
+	return NewArray([]RESP{}), nil
 }
