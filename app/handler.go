@@ -816,17 +816,18 @@ func incrCommand(args []RESP) (RESP, []byte) {
 	key := args[0].String
 	value, exists := GetStore().Get(key)
 
-	if exists {
-		intVal, err := strconv.ParseInt(value, 10, 64)
-		if err != nil {
-			return NewError("ERR value is not an integer or out of range"), nil
-		}
-
-		intVal++
-		GetStore().Set(key, strconv.FormatInt(intVal, 10), 0)
-
-		return NewInteger(int(intVal)), nil
+	if !exists {
+		GetStore().Set(key, "1", 0)
+		return NewInteger(1), nil
 	}
 
-	return NewError("ERR key dose not exist"), nil
+	intVal, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return NewError("ERR value is not an integer or out of range"), nil
+	}
+
+	intVal++
+	GetStore().Set(key, strconv.FormatInt(intVal, 10), 0)
+
+	return NewInteger(int(intVal)), nil
 }
