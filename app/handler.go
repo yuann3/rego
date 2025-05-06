@@ -40,6 +40,7 @@ func (r *Registry) registerCommands() {
 	r.Register("XRANGE", xrangeCommand, false)
 	r.Register("XREAD", xreadCommand, false)
 	r.Register("INCR", incrCommand, true)
+	r.Register("MULTI", multiCommand, true)
 }
 
 func (r *Registry) Register(name string, handler Handler, isWrite bool) {
@@ -830,4 +831,12 @@ func incrCommand(args []RESP) (RESP, []byte) {
 	GetStore().Set(key, strconv.FormatInt(intVal, 10), 0)
 
 	return NewInteger(int(intVal)), nil
+}
+
+func multiCommand(args []RESP) (RESP, []byte) {
+	if len(args) > 0 {
+		return NewError("ERR wrong number of arguments for 'multi' command"), nil
+	}
+
+	return NewSimpleString("OK"), nil
 }
