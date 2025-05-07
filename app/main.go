@@ -14,8 +14,9 @@ import (
 )
 
 type ClientState struct {
-	InTransaction bool
-	mu            sync.RWMutex
+	InTransaction  bool
+	QueuedCommands []RESP
+	mu             sync.RWMutex
 }
 
 var (
@@ -161,6 +162,19 @@ func processCommand(respObj RESP, registry *Registry, conn net.Conn) (RESP, []by
 	}
 
 	cmdName := strings.ToUpper(cmdNameResp.String)
+
+	state := getClientState(conn)
+	state.mu.RLock()
+	InTransaction := state.InTransaction
+	state.mu.RUnlock()
+
+	if InTransaction && cmdName != "EXEC" && cmdName != "MULTI" {
+		state.mu.Lock()
+		state.QueuedCommands = append(state.QueuedCommands, respObj)
+		state.mu.Unlock()
+		return NewSimpleString("QUEUED"), nil
+	}
+
 	handler, exists := registry.Get(cmdName)
 	if !exists {
 		return NewError(fmt.Sprintf("ERR unknown command '%s'", cmdName)), nil

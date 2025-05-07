@@ -849,6 +849,7 @@ func multiCommand(args []RESP, conn net.Conn) (RESP, []byte) {
 	state := getClientState(conn)
 	state.mu.Lock()
 	state.InTransaction = true
+	state.QueuedCommands = make([]RESP, 0)
 	state.mu.Unlock()
 
 	return NewSimpleString("OK"), nil
@@ -860,17 +861,49 @@ func execCommand(args []RESP, conn net.Conn) (RESP, []byte) {
 	}
 
 	state := getClientState(conn)
-	state.mu.RLock()
+	state.mu.Lock()
 	inTransaction := state.InTransaction
-	state.mu.RUnlock()
+	queuedCommands := state.QueuedCommands
+	state.InTransaction = false
+	state.QueuedCommands = nil
+	state.mu.Unlock()
 
 	if !inTransaction {
 		return NewError("ERR EXEC without MULTI"), nil
 	}
 
-	state.mu.Lock()
-	state.InTransaction = false
-	state.mu.Unlock()
+	registry := NewRegistry()
+	results := make([]RESP, len(queuedCommands))
 
-	return NewArray([]RESP{}), nil
+	for i, cmd := range queuedCommands {
+		if cmd.Type != Array || len(cmd.Array) == 0 {
+			results[i] = NewError("ERR invalid command format")
+			continue
+		}
+
+		cmdNameResp := cmd.Array[0]
+		if cmdNameResp.Type != BulkString {
+			results[i] = NewError("ERR command must be a bulk string")
+			continue
+		}
+
+		cmdName := strings.ToUpper(cmdNameResp.String)
+		handler, exists := registry.Get(cmdName)
+		if !exists {
+			results[i] = NewError(fmt.Sprintf("ERR unknown command '%s'", cmdName))
+			continue
+		}
+
+		args := cmd.Array[1:]
+		resp, _ := handler(args, conn)
+		results[i] = resp
+
+		if registry.IsWriteCommand(cmdName) && !GetServerConfig().IsReplica {
+			bytesWritten := int64(len(resp.Marshal()))
+			IncrementOffset(bytesWritten)
+			propagateCommand(cmd)
+		}
+	}
+
+	return NewArray(results), nil
 }
