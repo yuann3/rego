@@ -168,7 +168,7 @@ func processCommand(respObj RESP, registry *Registry, conn net.Conn) (RESP, []by
 	InTransaction := state.InTransaction
 	state.mu.RUnlock()
 
-	if InTransaction && cmdName != "EXEC" && cmdName != "MULTI" {
+	if InTransaction && cmdName != "EXEC" && cmdName != "MULTI" && cmdName != "DISCARD" {
 		state.mu.Lock()
 		state.QueuedCommands = append(state.QueuedCommands, respObj)
 		state.mu.Unlock()

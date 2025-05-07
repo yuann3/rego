@@ -49,6 +49,7 @@ func (r *Registry) registerCommands() {
 	r.Register("INCR", adaptHandler(incrCommand), true)
 	r.Register("MULTI", multiCommand, true)
 	r.Register("EXEC", execCommand, true)
+	r.Register("DISCARD", discardCommand, false)
 }
 
 func (r *Registry) Register(name string, handler Handler, isWrite bool) {
@@ -906,4 +907,23 @@ func execCommand(args []RESP, conn net.Conn) (RESP, []byte) {
 	}
 
 	return NewArray(results), nil
+}
+
+func discardCommand(args []RESP, conn net.Conn) (RESP, []byte) {
+	if len(args) > 0 {
+		return NewError("ERR wrong number of arguments for 'discard' command"), nil
+	}
+
+	state := getClientState(conn)
+	state.mu.Lock()
+	inTransaction := state.InTransaction
+	state.InTransaction = false
+	state.QueuedCommands = nil
+	state.mu.Unlock()
+
+	if !inTransaction {
+		return NewError("ERR DISCARD without MULTI"), nil
+	}
+
+	return NewSimpleString("OK"), nil
 }
