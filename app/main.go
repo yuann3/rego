@@ -44,6 +44,7 @@ func removeClientState(conn net.Conn) {
 	delete(clientStates, conn)
 	clientStatesMutex.Unlock()
 }
+
 func main() {
 	fmt.Println("Starting Redis server...")
 
