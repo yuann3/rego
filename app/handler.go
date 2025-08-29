@@ -1,90 +1,100 @@
 package main
 
 import (
-	"fmt"
-	"net"
-	"strconv"
-	"strings"
-	"sync"
-	"time"
+    "fmt"
+    "net"
+    "strconv"
+    "strings"
+    "sync"
+    "time"
 )
 
+// Handler implements a command with arguments and connection context.
 type Handler func(args []RESP, conn net.Conn) (RESP, []byte)
 
+// Registry stores command handlers and their write semantics.
 type Registry struct {
-	commands   map[string]Handler
-	isWriteCmd map[string]bool
+    commands   map[string]Handler
+    isWriteCmd map[string]bool
 }
 
+// adaptHandler wraps a stateless handler to the Handler signature.
 func adaptHandler(fn func(args []RESP) (RESP, []byte)) Handler {
-	return func(args []RESP, conn net.Conn) (RESP, []byte) {
-		return fn(args)
-	}
+    return func(args []RESP, conn net.Conn) (RESP, []byte) {
+        return fn(args)
+    }
 }
 
+// NewRegistry creates a command registry with all handlers registered.
 func NewRegistry() *Registry {
-	r := &Registry{
-		commands:   make(map[string]Handler),
-		isWriteCmd: make(map[string]bool),
-	}
-	r.registerCommands()
-	return r
+    r := &Registry{
+        commands:   make(map[string]Handler),
+        isWriteCmd: make(map[string]bool),
+    }
+    r.registerCommands()
+    return r
 }
 
 func (r *Registry) registerCommands() {
-	r.Register("PING", adaptHandler(pingCommand), false)
-	r.Register("ECHO", adaptHandler(echoCommand), false)
-	r.Register("SET", adaptHandler(setCommand), true)
-	r.Register("GET", adaptHandler(getCommand), false)
-	r.Register("CONFIG", adaptHandler(configCommand), false)
-	r.Register("KEYS", adaptHandler(keysCommand), false)
-	r.Register("INFO", adaptHandler(infoCommand), false)
-	r.Register("REPLCONF", adaptHandler(replconfCommand), false)
-	r.Register("PSYNC", adaptHandler(psyncCommand), false)
-	r.Register("WAIT", adaptHandler(waitCommand), false)
-	r.Register("TYPE", adaptHandler(typeCommand), false)
-	r.Register("XADD", adaptHandler(xaddCommand), true)
-	r.Register("XRANGE", adaptHandler(xrangeCommand), false)
-	r.Register("XREAD", adaptHandler(xreadCommand), false)
-	r.Register("INCR", adaptHandler(incrCommand), true)
-	r.Register("MULTI", multiCommand, true)
-	r.Register("EXEC", execCommand, true)
-	r.Register("DISCARD", discardCommand, false)
+    r.Register("PING", adaptHandler(pingCommand), false)
+    r.Register("ECHO", adaptHandler(echoCommand), false)
+    r.Register("SET", adaptHandler(setCommand), true)
+    r.Register("GET", adaptHandler(getCommand), false)
+    r.Register("CONFIG", adaptHandler(configCommand), false)
+    r.Register("KEYS", adaptHandler(keysCommand), false)
+    r.Register("INFO", adaptHandler(infoCommand), false)
+    r.Register("REPLCONF", adaptHandler(replconfCommand), false)
+    r.Register("PSYNC", adaptHandler(psyncCommand), false)
+    r.Register("WAIT", adaptHandler(waitCommand), false)
+    r.Register("TYPE", adaptHandler(typeCommand), false)
+    r.Register("XADD", adaptHandler(xaddCommand), true)
+    r.Register("XRANGE", adaptHandler(xrangeCommand), false)
+    r.Register("XREAD", adaptHandler(xreadCommand), false)
+    r.Register("INCR", adaptHandler(incrCommand), true)
+    r.Register("MULTI", multiCommand, true)
+    r.Register("EXEC", execCommand, true)
+    r.Register("DISCARD", discardCommand, false)
 }
 
+// Register adds a handler to the registry.
 func (r *Registry) Register(name string, handler Handler, isWrite bool) {
-	name = strings.ToUpper(name)
-	r.commands[name] = handler
-	r.isWriteCmd[name] = isWrite
+    name = strings.ToUpper(name)
+    r.commands[name] = handler
+    r.isWriteCmd[name] = isWrite
 }
 
+// Get looks up a handler by name.
 func (r *Registry) Get(name string) (Handler, bool) {
-	handler, ok := r.commands[strings.ToUpper(name)]
-	return handler, ok
+    handler, ok := r.commands[strings.ToUpper(name)]
+    return handler, ok
 }
 
+// IsWriteCommand reports whether a command mutates state.
 func (r *Registry) IsWriteCommand(name string) bool {
-	return r.isWriteCmd[strings.ToUpper(name)]
+    return r.isWriteCmd[strings.ToUpper(name)]
 }
 
+// pingCommand replies with PONG or echoes an argument.
 func pingCommand(args []RESP) (RESP, []byte) {
-	if len(args) == 0 {
-		return NewSimpleString("PONG"), nil
-	}
-	return NewBulkString(args[0].String), nil
+    if len(args) == 0 {
+        return NewSimpleString("PONG"), nil
+    }
+    return NewBulkString(args[0].String), nil
 }
 
+// echoCommand replies with the provided bulk string.
 func echoCommand(args []RESP) (RESP, []byte) {
-	if len(args) == 0 {
-		return NewError("ERR wrong number of arguments for 'echo' command"), nil
-	}
-	return NewBulkString(args[0].String), nil
+    if len(args) == 0 {
+        return NewError("ERR wrong number of arguments for 'echo' command"), nil
+    }
+    return NewBulkString(args[0].String), nil
 }
 
+// setCommand assigns a key to a string with options NX/XX and EX/PX.
 func setCommand(args []RESP) (RESP, []byte) {
-	if len(args) < 2 {
-		return NewError("ERR wrong number of arguments for 'set' command"), nil
-	}
+    if len(args) < 2 {
+        return NewError("ERR wrong number of arguments for 'set' command"), nil
+    }
 	key := args[0].String
 	value := args[1].String
 	expiry := time.Duration(0)
@@ -135,26 +145,28 @@ func setCommand(args []RESP) (RESP, []byte) {
 			return NewNullBulkString(), nil
 		}
 	}
-	GetStore().Set(key, value, expiry)
-	return NewSimpleString("OK"), nil
+    GetStore().Set(key, value, expiry)
+    return NewSimpleString("OK"), nil
 }
 
+// getCommand retrieves a string value or null bulk string.
 func getCommand(args []RESP) (RESP, []byte) {
-	if len(args) != 1 {
-		return NewError("ERR wrong number of arguments for 'get' command"), nil
-	}
+    if len(args) != 1 {
+        return NewError("ERR wrong number of arguments for 'get' command"), nil
+    }
 	key := args[0].String
 	value, exists := GetStore().Get(key)
 	if !exists {
 		return NewNullBulkString(), nil
 	}
-	return NewBulkString(value), nil
+    return NewBulkString(value), nil
 }
 
+// keysCommand returns keys matching a simple glob pattern.
 func keysCommand(args []RESP) (RESP, []byte) {
-	if len(args) != 1 {
-		return NewError("ERR wrong number of arguments for 'keys' command"), nil
-	}
+    if len(args) != 1 {
+        return NewError("ERR wrong number of arguments for 'keys' command"), nil
+    }
 	pattern := args[0].String
 	allKeys := GetStore().Keys()
 	var matchedKeys []string
@@ -178,83 +190,86 @@ func keysCommand(args []RESP) (RESP, []byte) {
 	for i, key := range matchedKeys {
 		items[i] = NewBulkString(key)
 	}
-	return NewArray(items), nil
+    return NewArray(items), nil
 }
 
+// infoCommand returns replication info.
 func infoCommand(args []RESP) (RESP, []byte) {
-	if len(args) != 1 {
-		return NewError("ERR wrong number of arguments for 'info' command"), nil
-	}
-	if strings.ToUpper(args[0].String) != "REPLICATION" {
-		return NewError("ERR only replication section is supported"), nil
-	}
-	role := "master"
-	if GetServerConfig().IsReplica {
-		role = "slave"
-	}
-	var info string
-	if role == "master" {
-		replicaCount := GetReplicaCount()
-		info = fmt.Sprintf("role:%s\r\nmaster_replid:%s\r\nmaster_repl_offset:%d\r\nconnected_slaves:%d",
-			role, masterReplID, masterReplOffset, replicaCount)
-	} else {
-		info = fmt.Sprintf("role:%s", role)
-	}
-	return NewBulkString(info), nil
+    if len(args) != 1 {
+        return NewError("ERR wrong number of arguments for 'info' command"), nil
+    }
+    if strings.ToUpper(args[0].String) != "REPLICATION" {
+        return NewError("ERR only replication section is supported"), nil
+    }
+    role := "master"
+    if GetServerConfig().IsReplica {
+        role = "slave"
+    }
+    var info string
+    if role == "master" {
+        replicaCount := GetReplicaCount()
+        info = fmt.Sprintf("role:%s\r\nmaster_replid:%s\r\nmaster_repl_offset:%d\r\nconnected_slaves:%d",
+            role, masterReplID, masterReplOffset, replicaCount)
+    } else {
+        info = fmt.Sprintf("role:%s", role)
+    }
+    return NewBulkString(info), nil
 }
 
+// replconfCommand handles replica configuration and ACK/GETACK exchange.
 func replconfCommand(args []RESP) (RESP, []byte) {
-	if len(args) == 0 {
-		return NewError("ERR wrong number of arguments for 'replconf' command"), nil
-	}
-	subCommand := strings.ToUpper(args[0].String)
-	switch subCommand {
-	case "GETACK":
-		offset := GetOffset()
-		if GetServerConfig().IsReplica {
-			if offset < 0 {
-				offset = 0
-			}
-		}
-		offsetStr := strconv.FormatInt(offset, 10)
-		fmt.Printf("Replying to GETACK with offset %s\n", offsetStr)
-		return NewArray([]RESP{
-			NewBulkString("REPLCONF"),
-			NewBulkString("ACK"),
-			NewBulkString(offsetStr),
-		}), nil
-	case "ACK":
-		if len(args) >= 2 {
-			offset, err := strconv.ParseInt(args[1].String, 10, 64)
-			if err == nil {
-				fmt.Printf("Received ACK with offset %d\n", offset)
-			}
-		}
-		return RESP{}, nil
-	case "LISTENING-PORT", "CAPA":
-		return NewSimpleString("OK"), nil
-	}
-	return NewSimpleString("OK"), nil
+    if len(args) == 0 {
+        return NewError("ERR wrong number of arguments for 'replconf' command"), nil
+    }
+    subCommand := strings.ToUpper(args[0].String)
+    switch subCommand {
+    case "GETACK":
+        offset := GetOffset()
+        if GetServerConfig().IsReplica {
+            if offset < 0 {
+                offset = 0
+            }
+        }
+        offsetStr := strconv.FormatInt(offset, 10)
+        return NewArray([]RESP{
+            NewBulkString("REPLCONF"),
+            NewBulkString("ACK"),
+            NewBulkString(offsetStr),
+        }), nil
+    case "ACK":
+        if len(args) >= 2 {
+            offset, err := strconv.ParseInt(args[1].String, 10, 64)
+            if err == nil {
+                _ = offset
+            }
+        }
+        return RESP{}, nil
+    case "LISTENING-PORT", "CAPA":
+        return NewSimpleString("OK"), nil
+    }
+    return NewSimpleString("OK"), nil
 }
 
+// psyncCommand performs a full resync and returns an empty RDB snapshot.
 func psyncCommand(args []RESP) (RESP, []byte) {
-	response := fmt.Sprintf("FULLRESYNC %s %d", masterReplID, masterReplOffset)
-	emptyRDB := []byte{
-		0x52, 0x45, 0x44, 0x49, 0x53, 0x30, 0x30, 0x31, 0x31, 0xfa, 0x09, 0x72, 0x65, 0x64, 0x69,
-		0x73, 0x2d, 0x76, 0x65, 0x72, 0x05, 0x37, 0x2e, 0x32, 0x2e, 0x30, 0xfa, 0x0a, 0x72, 0x65,
-		0x64, 0x69, 0x73, 0x2d, 0x62, 0x69, 0x74, 0x73, 0xc0, 0x40, 0xfa, 0x05, 0x63, 0x74, 0x69,
-		0x6d, 0x65, 0xc2, 0x6d, 0x08, 0xbc, 0x65, 0xfa, 0x08, 0x75, 0x73, 0x65, 0x64, 0x2d, 0x6d,
-		0x65, 0x6d, 0xc2, 0xb0, 0xc4, 0x10, 0x00, 0xfa, 0x08, 0x61, 0x6f, 0x66, 0x2d, 0x62, 0x61,
-		0x73, 0x65, 0xc0, 0x00, 0xff, 0xf0, 0x6e, 0x3b, 0xfe, 0xc0, 0xff, 0x5a, 0xa2,
-	}
-	rdbBytes := make([]byte, 0, len(emptyRDB)+16)
-	rdbBytes = append(rdbBytes, '$')
-	rdbBytes = append(rdbBytes, []byte(strconv.Itoa(len(emptyRDB)))...)
-	rdbBytes = append(rdbBytes, '\r', '\n')
-	rdbBytes = append(rdbBytes, emptyRDB...)
-	return NewSimpleString(response), rdbBytes
+    response := fmt.Sprintf("FULLRESYNC %s %d", masterReplID, masterReplOffset)
+    emptyRDB := []byte{
+        0x52, 0x45, 0x44, 0x49, 0x53, 0x30, 0x30, 0x31, 0x31, 0xfa, 0x09, 0x72, 0x65, 0x64, 0x69,
+        0x73, 0x2d, 0x76, 0x65, 0x72, 0x05, 0x37, 0x2e, 0x32, 0x2e, 0x30, 0xfa, 0x0a, 0x72, 0x65,
+        0x64, 0x69, 0x73, 0x2d, 0x62, 0x69, 0x74, 0x73, 0xc0, 0x40, 0xfa, 0x05, 0x63, 0x74, 0x69,
+        0x6d, 0x65, 0xc2, 0x6d, 0x08, 0xbc, 0x65, 0xfa, 0x08, 0x75, 0x73, 0x65, 0x64, 0x2d, 0x6d,
+        0x65, 0x6d, 0xc2, 0xb0, 0xc4, 0x10, 0x00, 0xfa, 0x08, 0x61, 0x6f, 0x66, 0x2d, 0x62, 0x61,
+        0x73, 0x65, 0xc0, 0x00, 0xff, 0xf0, 0x6e, 0x3b, 0xfe, 0xc0, 0xff, 0x5a, 0xa2,
+    }
+    rdbBytes := make([]byte, 0, len(emptyRDB)+16)
+    rdbBytes = append(rdbBytes, '$')
+    rdbBytes = append(rdbBytes, []byte(strconv.Itoa(len(emptyRDB)))...)
+    rdbBytes = append(rdbBytes, '\r', '\n')
+    rdbBytes = append(rdbBytes, emptyRDB...)
+    return NewSimpleString(response), rdbBytes
 }
 
+// waitCommand blocks until a number of replicas acknowledge current offset or timeout.
 func waitCommand(args []RESP) (RESP, []byte) {
 	if len(args) != 2 {
 		return NewError("ERR wrong number of arguments for 'wait' command"), nil
@@ -292,6 +307,7 @@ func waitCommand(args []RESP) (RESP, []byte) {
 	return NewInteger(GetAcknowledgedReplicaCount(currentOffset)), nil
 }
 
+// configCommand handles CONFIG subcommands.
 func configCommand(args []RESP) (RESP, []byte) {
 	if len(args) < 1 {
 		return NewError("ERR wrong number of arguments for 'config' command"), nil
@@ -323,6 +339,7 @@ func configGetCommand(args []RESP) (RESP, []byte) {
 	return NewArray(pairs), nil
 }
 
+// parseStreamID parses a provided ID for XADD, handling auto-generation modes.
 func parseStreamID(id string, lastID string) (int64, int64, bool, error) {
 	if id == "*" {
 		ms := time.Now().UnixMilli()
@@ -385,6 +402,7 @@ func parseStreamID(id string, lastID string) (int64, int64, bool, error) {
 	return ms, seq, false, nil
 }
 
+// xaddCommand appends a new entry to a stream.
 func xaddCommand(args []RESP) (RESP, []byte) {
 	if len(args) < 3 {
 		return NewError("ERR wrong number of arguments for 'xadd' command"), nil
@@ -466,6 +484,7 @@ func xaddCommand(args []RESP) (RESP, []byte) {
 	return NewBulkString(id), nil
 }
 
+// typeCommand returns the Redis type of a key.
 func typeCommand(args []RESP) (RESP, []byte) {
 	if len(args) != 1 {
 		return NewError("ERR wrong number of arguments for 'type' command"), nil
@@ -477,6 +496,7 @@ func typeCommand(args []RESP) (RESP, []byte) {
 	return NewSimpleString(keyType), nil
 }
 
+// xrangeCommand returns entries between start and end IDs.
 func xrangeCommand(args []RESP) (RESP, []byte) {
 	if len(args) != 3 {
 		return NewError("ERR wrong number of arguments for 'xrange' command"), nil
@@ -529,6 +549,7 @@ func xrangeCommand(args []RESP) (RESP, []byte) {
 	return NewArray(results), nil
 }
 
+// parseRangeID parses an ID used in range or XREAD queries.
 func parseRangeID(id string, isEnd bool, key string) (int64, int64, error) {
 	if id == "-" {
 		return 0, 0, nil
@@ -586,6 +607,7 @@ func parseRangeID(id string, isEnd bool, key string) (int64, int64, error) {
 	return ms, seq, nil
 }
 
+// splitStreamID splits an ID into milliseconds and sequence.
 func splitStreamID(id string) (int64, int64, error) {
 	parts := strings.Split(id, "-")
 	if len(parts) != 2 {
@@ -605,6 +627,7 @@ func splitStreamID(id string) (int64, int64, error) {
 	return ms, seq, nil
 }
 
+// compareStreamIDs compares two stream IDs.
 func compareStreamIDs(ms1, seq1, ms2, seq2 int64) int {
 	if ms1 < ms2 {
 		return -1
@@ -621,6 +644,7 @@ func compareStreamIDs(ms1, seq1, ms2, seq2 int64) int {
 	return 0
 }
 
+// xreadCommand reads from one or more streams, optionally blocking.
 func xreadCommand(args []RESP) (RESP, []byte) {
 	if len(args) < 3 {
 		return NewError("ERR wrong number of arguments for 'xread' command"), nil
@@ -725,10 +749,11 @@ func xreadCommand(args []RESP) (RESP, []byte) {
 	return NewArray(results), nil
 }
 
+// handleBlockingRead orchestrates multi-key blocking reads and returns on first result or timeout.
 func handleBlockingRead(keys []RESP, ids []RESP, blockMs int64) (RESP, []byte) {
-	sm := GetStreamManager()
-	var blockTimeout time.Duration
-	hasTimeout := blockMs > 0
+    sm := GetStreamManager()
+    var blockTimeout time.Duration
+    hasTimeout := blockMs > 0
 
 	if hasTimeout {
 		blockTimeout = time.Duration(blockMs) * time.Millisecond
@@ -753,14 +778,12 @@ func handleBlockingRead(keys []RESP, ids []RESP, blockMs int64) (RESP, []byte) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
-	fmt.Printf("Registering %d streams for blocking read. Timeout: %dms\n", numStreams, blockMs)
-
-	for i := range numStreams {
-		wg.Add(1)
-		go func(index int) {
-			defer wg.Done()
-			key := keys[index].String
-			startID := ids[index].String
+    for i := range numStreams {
+        wg.Add(1)
+        go func(index int) {
+            defer wg.Done()
+            key := keys[index].String
+            startID := ids[index].String
 
 			clientTimeoutDuration := time.Duration(0)
 			if hasTimeout {
@@ -769,55 +792,53 @@ func handleBlockingRead(keys []RESP, ids []RESP, blockMs int64) (RESP, []byte) {
 
 			resCh, timer := sm.RegisterBlockedClient(key, startID, clientTimeoutDuration)
 
-			mu.Lock()
-			resultChs[index] = resCh
-			timers[index] = timer
-			clientInfos[index] = &BlockedClient{key: key, resultCh: resCh}
-			mu.Unlock()
-		}(i)
-	}
-	wg.Wait()
+            mu.Lock()
+            resultChs[index] = resCh
+            timers[index] = timer
+            clientInfos[index] = &BlockedClient{key: key, resultCh: resCh}
+            mu.Unlock()
+        }(i)
+    }
+    wg.Wait()
 
-	firstResultCh := make(chan []RESP, 1)
+    firstResultCh := make(chan []RESP, 1)
 
-	for i := range numStreams {
-		listenerIndex := i
-		go func() {
-			result, ok := <-resultChs[listenerIndex]
-			if ok && len(result) > 0 {
-				select {
-				case firstResultCh <- result:
-					fmt.Printf("Goroutine %d: Sent result for key '%s' to aggregate channel.\n", listenerIndex, keys[listenerIndex].String)
-				default:
-					fmt.Printf("Goroutine %d: Aggregate channel already received result. Discarding result for key '%s'.\n", listenerIndex, keys[listenerIndex].String)
-				}
-			} else {
-				fmt.Printf("Goroutine %d: Channel for key '%s' closed or empty result.\n", listenerIndex, keys[listenerIndex].String)
-			}
-		}()
-	}
+    for i := range numStreams {
+        listenerIndex := i
+        go func() {
+            result, ok := <-resultChs[listenerIndex]
+            if ok && len(result) > 0 {
+                select {
+                case firstResultCh <- result:
+                default:
+                    _ = listenerIndex
+                }
+            } else {
+                _ = listenerIndex
+            }
+        }()
+    }
 
-	select {
-	case firstResult := <-firstResultCh:
-		fmt.Println("Received first jresult from a stream.")
-		for i := range numStreams {
-			if clientInfos[i] != nil {
-				sm.RemoveBlockedClient(clientInfos[i].key, clientInfos[i].resultCh)
-			}
-		}
-		return NewArray([]RESP{NewArray(firstResult)}), nil
+    select {
+    case firstResult := <-firstResultCh:
+        for i := range numStreams {
+            if clientInfos[i] != nil {
+                sm.RemoveBlockedClient(clientInfos[i].key, clientInfos[i].resultCh)
+            }
+        }
+        return NewArray([]RESP{NewArray(firstResult)}), nil
 
-	case <-overallTimeoutChan:
-		fmt.Println("Overall blocking read timed out.")
-		for i := range numStreams {
-			if clientInfos[i] != nil {
-				sm.RemoveBlockedClient(clientInfos[i].key, clientInfos[i].resultCh)
-			}
-		}
-		return NewNullBulkString(), nil
-	}
+    case <-overallTimeoutChan:
+        for i := range numStreams {
+            if clientInfos[i] != nil {
+                sm.RemoveBlockedClient(clientInfos[i].key, clientInfos[i].resultCh)
+            }
+        }
+        return NewNullArray(), nil
+    }
 }
 
+// incrCommand increments an integer value stored at a key.
 func incrCommand(args []RESP) (RESP, []byte) {
 	if len(args) != 1 {
 		return NewError("ERR wrong number of arguments for 'incr' command"), nil
@@ -842,6 +863,7 @@ func incrCommand(args []RESP) (RESP, []byte) {
 	return NewInteger(int(intVal)), nil
 }
 
+// multiCommand begins a transaction, queueing subsequent commands.
 func multiCommand(args []RESP, conn net.Conn) (RESP, []byte) {
 	if len(args) > 0 {
 		return NewError("ERR wrong number of arguments for 'multi' command"), nil
@@ -856,6 +878,7 @@ func multiCommand(args []RESP, conn net.Conn) (RESP, []byte) {
 	return NewSimpleString("OK"), nil
 }
 
+// execCommand executes queued transactional commands.
 func execCommand(args []RESP, conn net.Conn) (RESP, []byte) {
 	if len(args) > 0 {
 		return NewError("ERR wrong number of arguments for 'exec' command"), nil
@@ -873,8 +896,8 @@ func execCommand(args []RESP, conn net.Conn) (RESP, []byte) {
 		return NewError("ERR EXEC without MULTI"), nil
 	}
 
-	registry := NewRegistry()
-	results := make([]RESP, len(queuedCommands))
+    registry := NewRegistry()
+    results := make([]RESP, len(queuedCommands))
 
 	for i, cmd := range queuedCommands {
 		if cmd.Type != Array || len(cmd.Array) == 0 {
@@ -899,16 +922,17 @@ func execCommand(args []RESP, conn net.Conn) (RESP, []byte) {
 		resp, _ := handler(args, conn)
 		results[i] = resp
 
-		if registry.IsWriteCommand(cmdName) && !GetServerConfig().IsReplica {
-			bytesWritten := int64(len(resp.Marshal()))
-			IncrementOffset(bytesWritten)
-			propagateCommand(cmd)
-		}
+        if registry.IsWriteCommand(cmdName) && !GetServerConfig().IsReplica {
+            bytesWritten := int64(len(resp.Marshal()))
+            IncrementOffset(bytesWritten)
+            propagateCommand(cmd)
+        }
 	}
 
 	return NewArray(results), nil
 }
 
+// discardCommand aborts a transaction, clearing queued commands.
 func discardCommand(args []RESP, conn net.Conn) (RESP, []byte) {
 	if len(args) > 0 {
 		return NewError("ERR wrong number of arguments for 'discard' command"), nil
